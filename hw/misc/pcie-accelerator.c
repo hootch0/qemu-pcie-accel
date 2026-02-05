@@ -1144,6 +1144,8 @@ static void accel_mmio_write(void *opaque, hwaddr addr, uint64_t data,
             /* Initialize admin SQ */
             uint16_t asqs = (n->bar.aqa & ACCEL_AQA_ASQS_MASK) + 1;
             accel_init_sq(&n->admin_sq, n, data, 0, 0, asqs);
+            /* Link admin SQ to sq[0] for doorbell dispatch */
+            n->sq[0] = &n->admin_sq;
         }
         break;
 
@@ -1156,6 +1158,8 @@ static void accel_mmio_write(void *opaque, hwaddr addr, uint64_t data,
             /* Initialize admin CQ */
             uint16_t acqs = ((n->bar.aqa >> 16) & ACCEL_AQA_ACQS_MASK) + 1;
             accel_init_cq(&n->admin_cq, n, data, 0, 0, acqs, 1);
+            /* Link admin CQ to cq[0] for doorbell dispatch */
+            n->cq[0] = &n->admin_cq;
         }
         break;
 
@@ -1358,6 +1362,10 @@ void pcie_accel_reset(DeviceState *dev)
     n->bar.aqa = 0;
     n->bar.asq = 0;
     n->bar.acq = 0;
+
+    /* Clear admin queue links */
+    n->sq[0] = NULL;
+    n->cq[0] = NULL;
 
     /* Reset interrupt coalescing */
     n->bar.intcoal = 0;
