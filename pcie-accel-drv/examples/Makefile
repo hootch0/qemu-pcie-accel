@@ -18,8 +18,7 @@ CFLAGS := -Wall -Wextra -O2
 CFLAGS += -D_GNU_SOURCE
 
 # Link with liburing for io_uring support
-LDFLAGS := -L../libaccel
-LIBS := -laccel -luring
+LIBS := -luring
 
 # Debug build
 ifdef DEBUG

@@ -204,7 +204,6 @@ static int run_loopback_async_batch(struct accel_device *dev, uint16_t qid,
 {
     struct test_context *contexts = NULL;
     struct accel_async_token *tokens = NULL;
-    struct accel_async_result *results = NULL;
     int ret = -1;
     int remaining = total_iterations;
     int batch_num = 0;
@@ -216,8 +215,7 @@ static int run_loopback_async_batch(struct accel_device *dev, uint16_t qid,
     }
 
     tokens = calloc(batch_size, sizeof(*tokens));
-    results = calloc(batch_size, sizeof(*results));
-    if (!tokens || !results)
+    if (!tokens)
         goto out;
 
     *passed = 0;
@@ -272,54 +270,40 @@ static int run_loopback_async_batch(struct accel_device *dev, uint16_t qid,
         printf("  Batch %d: submitted %d operations\n", batch_num, current_batch);
 
         /* Wait for all completions in this batch */
-        int completed = 0;
-        ret = accel_wait_completions(dev, results, current_batch,
-                                     5000, &completed);
-        if (ret != ACCEL_SUCCESS && ret != ACCEL_ERR_TIMEOUT) {
+        int completed = accel_wait_completions(dev, tokens, current_batch,
+                                               current_batch, 5000);
+        if (completed < 0) {
             fprintf(stderr, "Failed to wait for completions: %s\n",
-                    accel_strerror(ret));
+                    accel_strerror(completed));
             goto out;
         }
 
         printf("  Batch %d: completed %d operations\n", batch_num, completed);
 
-        /* Process results */
-        for (int i = 0; i < completed; i++) {
-            /* Find matching context by token */
-            for (int j = 0; j < current_batch; j++) {
-                if (results[i].token.user_data == contexts[j].token.user_data) {
-                    contexts[j].completed = true;
-
-                    if (results[i].result == ACCEL_SUCCESS) {
-                        /* Verify data */
-                        int errors = verify_loopback_data(
-                            contexts[j].original,
-                            contexts[j].buffer,
-                            contexts[j].size,
-                            contexts[j].pattern);
-
-                        if (errors == 0) {
-                            (*passed)++;
-                            contexts[j].result = 0;
-                        } else {
-                            (*failed)++;
-                            contexts[j].result = -1;
-                        }
-                    } else {
-                        (*failed)++;
-                        contexts[j].result = -1;
-                    }
-                    break;
-                }
-            }
-        }
-
-        /* Check for any uncompleted operations */
+        /* Process results - wait for each token individually to get result */
         for (int i = 0; i < current_batch; i++) {
-            if (!contexts[i].completed) {
-                fprintf(stderr, "Warning: operation %d did not complete\n",
-                        contexts[i].iteration);
+            uint32_t result;
+            ret = accel_wait_completion(dev, &contexts[i].token, &result);
+            contexts[i].completed = true;
+
+            if (ret == ACCEL_SUCCESS && result == ACCEL_SUCCESS) {
+                /* Verify data */
+                int errors = verify_loopback_data(
+                    contexts[i].original,
+                    contexts[i].buffer,
+                    contexts[i].size,
+                    contexts[i].pattern);
+
+                if (errors == 0) {
+                    (*passed)++;
+                    contexts[i].result = 0;
+                } else {
+                    (*failed)++;
+                    contexts[i].result = -1;
+                }
+            } else {
                 (*failed)++;
+                contexts[i].result = -1;
             }
         }
 
@@ -333,7 +317,6 @@ static int run_loopback_async_batch(struct accel_device *dev, uint16_t qid,
 
 out:
     free(tokens);
-    free(results);
     free_test_contexts(contexts, batch_size);
     return ret;
 }
@@ -386,14 +369,14 @@ static int run_loopback_async_concurrent(struct accel_device *dev, uint16_t qid,
 
     /* Process completions and submit new operations */
     while (completed_count < total_iterations) {
-        struct accel_async_result result;
+        struct accel_async_token poll_token;
         int count;
 
         /* Poll for completions (non-blocking) */
-        ret = accel_poll_completions(dev, &result, 1, &count);
-        if (ret != ACCEL_SUCCESS) {
+        count = accel_poll_completions(dev, &poll_token, 1);
+        if (count < 0) {
             fprintf(stderr, "Failed to poll completions: %s\n",
-                    accel_strerror(ret));
+                    accel_strerror(count));
             goto out;
         }
 
@@ -402,8 +385,12 @@ static int run_loopback_async_concurrent(struct accel_device *dev, uint16_t qid,
 
             /* Find and process the completed context */
             for (int i = 0; i < in_flight; i++) {
-                if (contexts[i].token.user_data == result.token.user_data) {
-                    if (result.result == ACCEL_SUCCESS) {
+                if (contexts[i].token.user_data == poll_token.user_data) {
+                    /* Get the result for this token */
+                    uint32_t result;
+                    ret = accel_wait_completion(dev, &contexts[i].token, &result);
+
+                    if (ret == ACCEL_SUCCESS && result == ACCEL_SUCCESS) {
                         int errors = verify_loopback_data(
                             contexts[i].original,
                             contexts[i].buffer,
@@ -441,9 +428,9 @@ static int run_loopback_async_concurrent(struct accel_device *dev, uint16_t qid,
                    submitted - completed_count);
             fflush(stdout);
         } else {
-            /* No completion ready, do a short wait */
-            ret = accel_wait_completion(dev, &result, 10);
-            if (ret == ACCEL_SUCCESS) {
+            /* No completion ready, wait a bit for any completion */
+            count = accel_wait_completions(dev, &poll_token, 1, 1, 10);
+            if (count > 0) {
                 /* Found a completion, re-process in next iteration */
                 continue;
             }

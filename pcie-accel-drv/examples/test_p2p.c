@@ -234,25 +234,23 @@ static void free_p2p_contexts(struct p2p_context *contexts, int count)
  * io_uring for maximum throughput.
  */
 static int run_p2p_concurrent_async(struct accel_device *dev1,
-                                    struct accel_device *dev2,
-                                    uint16_t bdf1, uint16_t bdf2,
+                                    struct accel_device *dev2 __attribute__((unused)),
+                                    uint16_t bdf1 __attribute__((unused)),
+                                    uint16_t bdf2,
                                     uint16_t qid, size_t size,
                                     int total_iterations, int concurrent,
                                     int *passed, int *failed)
 {
     struct p2p_context *write_contexts = NULL;
     struct p2p_context *read_contexts = NULL;
-    struct accel_async_result *results = NULL;
     int ret = -1;
     int pair_submitted = 0;
-    int pairs_completed = 0;
 
     /* Allocate contexts for concurrent operations */
     write_contexts = alloc_p2p_contexts(concurrent, size);
     read_contexts = alloc_p2p_contexts(concurrent, size);
-    results = calloc(concurrent * 2, sizeof(*results));
 
-    if (!write_contexts || !read_contexts || !results) {
+    if (!write_contexts || !read_contexts) {
         fprintf(stderr, "Failed to allocate contexts\n");
         goto out;
     }
@@ -329,24 +327,27 @@ static int run_p2p_concurrent_async(struct accel_device *dev1,
     /* Wait for all writes to complete before issuing reads */
     int writes_completed = 0;
     while (writes_completed < pair_submitted) {
-        struct accel_async_result result;
+        struct accel_async_token poll_token;
+        int count;
 
-        ret = accel_wait_completion(dev1, &result, 1000);
-        if (ret == ACCEL_ERR_TIMEOUT) {
-            fprintf(stderr, "Timeout waiting for P2P writes\n");
+        count = accel_poll_completions(dev1, &poll_token, 1);
+        if (count < 0) {
+            fprintf(stderr, "Error polling completions: %s\n",
+                    accel_strerror(count));
             goto out;
         }
-        if (ret != ACCEL_SUCCESS) {
-            fprintf(stderr, "Error waiting for completion: %s\n",
-                    accel_strerror(ret));
-            goto out;
+        if (count == 0) {
+            /* Brief sleep and retry */
+            usleep(100);
+            continue;
         }
 
         /* Find matching context */
         for (int i = 0; i < pair_submitted; i++) {
-            if (write_contexts[i].token.user_data == result.token.user_data) {
+            if (write_contexts[i].token.user_data == poll_token.user_data &&
+                !write_contexts[i].completed) {
                 write_contexts[i].completed = true;
-                write_contexts[i].result = result.result;
+                write_contexts[i].result = poll_token.result;
                 writes_completed++;
                 break;
             }
@@ -381,26 +382,28 @@ static int run_p2p_concurrent_async(struct accel_device *dev1,
     /* Wait for reads and verify */
     int reads_completed = 0;
     while (reads_completed < pair_submitted) {
-        struct accel_async_result result;
+        struct accel_async_token poll_token;
+        int count;
 
-        ret = accel_wait_completion(dev1, &result, 1000);
-        if (ret == ACCEL_ERR_TIMEOUT) {
-            fprintf(stderr, "Timeout waiting for P2P reads\n");
+        count = accel_poll_completions(dev1, &poll_token, 1);
+        if (count < 0) {
+            fprintf(stderr, "Error polling read completions: %s\n",
+                    accel_strerror(count));
             goto out;
         }
-        if (ret != ACCEL_SUCCESS && ret != ACCEL_ERR_TIMEOUT) {
-            fprintf(stderr, "Error waiting for read: %s\n",
-                    accel_strerror(ret));
-            goto out;
+        if (count == 0) {
+            usleep(100);
+            continue;
         }
 
         /* Find and verify */
         for (int i = 0; i < pair_submitted; i++) {
-            if (read_contexts[i].token.user_data == result.token.user_data) {
+            if (read_contexts[i].token.user_data == poll_token.user_data &&
+                !read_contexts[i].completed) {
                 read_contexts[i].completed = true;
                 reads_completed++;
 
-                if (result.result == ACCEL_SUCCESS) {
+                if (poll_token.result == ACCEL_SUCCESS) {
                     int errors = verify_test_pattern(read_contexts[i].buffer,
                                                      size,
                                                      read_contexts[i].seed);
@@ -412,7 +415,7 @@ static int run_p2p_concurrent_async(struct accel_device *dev1,
                     }
                 } else {
                     fprintf(stderr, "P2P read %d failed: %d\n",
-                            i, result.result);
+                            i, poll_token.result);
                     (*failed)++;
                 }
                 break;
@@ -424,11 +427,9 @@ static int run_p2p_concurrent_async(struct accel_device *dev1,
     }
 
     printf("\n");
-    pairs_completed = pair_submitted;
     ret = 0;
 
 out:
-    free(results);
     free_p2p_contexts(write_contexts, concurrent);
     free_p2p_contexts(read_contexts, concurrent);
     return ret;
@@ -507,27 +508,26 @@ static int run_bidirectional_async(struct accel_device *dev1,
         accel_submit_batch(dev2);
 
         /* Wait for both completions */
-        struct accel_async_result result1, result2;
         int got1 = 0, got2 = 0;
 
         while (!got1 || !got2) {
-            struct accel_async_result result;
+            struct accel_async_token poll_token;
+            int count;
 
             if (!got1) {
-                ret = accel_wait_completion(dev1, &result, 100);
-                if (ret == ACCEL_SUCCESS) {
-                    result1 = result;
+                count = accel_poll_completions(dev1, &poll_token, 1);
+                if (count > 0)
                     got1 = 1;
-                }
             }
 
             if (!got2) {
-                ret = accel_wait_completion(dev2, &result, 100);
-                if (ret == ACCEL_SUCCESS) {
-                    result2 = result;
+                count = accel_poll_completions(dev2, &poll_token, 1);
+                if (count > 0)
                     got2 = 1;
-                }
             }
+
+            if (!got1 || !got2)
+                usleep(100);
         }
 
         printf("  [%d] Bidirectional writes completed\n", i);
@@ -558,19 +558,23 @@ static int run_bidirectional_async(struct accel_device *dev1,
         /* Wait for reads */
         got1 = got2 = 0;
         while (!got1 || !got2) {
-            struct accel_async_result result;
+            struct accel_async_token poll_token;
+            int count;
 
             if (!got1) {
-                ret = accel_wait_completion(dev1, &result, 100);
-                if (ret == ACCEL_SUCCESS)
+                count = accel_poll_completions(dev1, &poll_token, 1);
+                if (count > 0)
                     got1 = 1;
             }
 
             if (!got2) {
-                ret = accel_wait_completion(dev2, &result, 100);
-                if (ret == ACCEL_SUCCESS)
+                count = accel_poll_completions(dev2, &poll_token, 1);
+                if (count > 0)
                     got2 = 1;
             }
+
+            if (!got1 || !got2)
+                usleep(100);
         }
 
         /* Verify both directions */
