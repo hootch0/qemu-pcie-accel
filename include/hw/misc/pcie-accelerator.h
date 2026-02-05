@@ -1,0 +1,483 @@
+/*
+ * QEMU PCIe Accelerator Device - Device Structures
+ *
+ * Copyright (c) 2026 QEMU Project
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the COPYING file in the top-level directory.
+ *
+ * This header defines the core data structures for the PCIe Accelerator device.
+ * The device implements NVMe-style submission/completion queues with doorbell
+ * registers, supports P2P DMA between multiple devices, PASID/SVA for shared
+ * virtual addressing, MSI-X interrupts with coalescing, and CXL Type 1 memory
+ * expander integration.
+ */
+
+#ifndef HW_PCIE_ACCELERATOR_H
+#define HW_PCIE_ACCELERATOR_H
+
+#include "hw/pci/pci_device.h"
+#include "hw/pci/pcie.h"
+#include "qemu/queue.h"
+#include "qom/object.h"
+#include "system/hostmem.h"
+#include "system/dma.h"
+#include "hw/misc/pcie-accelerator-regs.h"
+
+#define TYPE_PCIE_ACCEL "pcie-accelerator"
+OBJECT_DECLARE_SIMPLE_TYPE(PCIeAccel, PCIE_ACCEL)
+
+/*
+ * ===== Command and Completion Entry Structures =====
+ *
+ * These structures define the format of submission and completion queue entries.
+ * They are shared between the device and driver, so layout must be exact.
+ */
+
+/*
+ * Submission Queue Entry (64 bytes)
+ *
+ * Generic command structure following NVMe CDW (Command Dword) pattern.
+ * Commands are 64 bytes to match cache line size for efficient DMA.
+ */
+typedef struct QEMU_PACKED AccelCmd {
+    /* CDW0 */
+    uint8_t  opcode;          /* Command opcode (see ACCEL_CMD_* in regs.h) */
+    uint8_t  flags;           /* Command flags (PASID enable, privilege, etc.) */
+    uint16_t cid;             /* Command identifier (unique within SQ) */
+
+    /* CDW1 */
+    uint32_t nsid;            /* Namespace/Peer ID (for P2P commands) */
+
+    /* CDW2-3: Reserved */
+    uint64_t rsvd1;
+
+    /* CDW4-5: Metadata pointer (currently unused) */
+    uint64_t metadata;
+
+    /* CDW6-9: Data pointers */
+    uint64_t prp1;            /* Physical Region Page 1 (source buffer address) */
+    uint64_t prp2;            /* Physical Region Page 2 (dest buffer or PRP list) */
+
+    /* CDW10-15: Command-specific parameters */
+    union {
+        /* P2P transfer parameters (for P2P_WRITE/P2P_READ commands) */
+        struct {
+            uint32_t length;       /* Transfer length in bytes */
+            uint32_t rsvd;
+            uint64_t peer_addr;    /* Peer device physical address (DPA) */
+            uint32_t peer_bdf;     /* Peer device Bus:Device:Function */
+            uint32_t pasid;        /* Process Address Space ID (if PASID enabled) */
+        } p2p;
+
+        /* Loopback test parameters */
+        struct {
+            uint32_t length;       /* Buffer length in bytes */
+            uint32_t pattern;      /* Data pattern for verification (optional) */
+            uint32_t flags;        /* Loopback-specific flags */
+            uint32_t rsvd[3];
+        } loopback;
+
+        /* CXL memory access parameters */
+        struct {
+            uint32_t length;       /* Access length in bytes */
+            uint32_t rsvd;
+            uint64_t dpa;          /* Device Physical Address in CXL memory */
+            uint64_t rsvd2;
+        } cxl;
+
+        /* Admin command parameters */
+        struct {
+            uint32_t cdw10;
+            uint32_t cdw11;
+            uint32_t cdw12;
+            uint32_t cdw13;
+            uint32_t cdw14;
+            uint32_t cdw15;
+        } admin;
+    } dw;
+} AccelCmd;
+
+QEMU_BUILD_BUG_ON(sizeof(AccelCmd) != 64);
+
+/*
+ * Completion Queue Entry (16 bytes)
+ *
+ * Minimal completion entry with phase bit for wrap-around detection.
+ * The phase bit toggles each time the CQ wraps to the beginning.
+ */
+typedef struct QEMU_PACKED AccelCqe {
+    uint32_t result;          /* Command-specific result value */
+    uint32_t rsvd;            /* Reserved */
+    uint16_t sq_head;         /* SQ head pointer at completion time */
+    uint16_t sq_id;           /* SQ identifier */
+    uint16_t cid;             /* Command identifier from submission */
+    uint16_t status;          /* Status[15:1] = status code, Status[0] = phase bit */
+} AccelCqe;
+
+QEMU_BUILD_BUG_ON(sizeof(AccelCqe) != 16);
+
+/*
+ * Helper macros for CQE status field manipulation
+ */
+#define ACCEL_CQE_STATUS_PHASE_MASK 0x0001
+#define ACCEL_CQE_STATUS_CODE_SHIFT 1
+#define ACCEL_CQE_STATUS_CODE_MASK  0xFFFE
+#define ACCEL_CQE_DNR_SHIFT         15
+
+/* Extract status code from CQE status field */
+#define ACCEL_CQE_STATUS_CODE(status) (((status) >> ACCEL_CQE_STATUS_CODE_SHIFT) & 0x7FFF)
+
+/* Build CQE status field from code and phase */
+#define ACCEL_CQE_BUILD_STATUS(code, phase) \
+    ((((code) << ACCEL_CQE_STATUS_CODE_SHIFT) & ACCEL_CQE_STATUS_CODE_MASK) | \
+     ((phase) & ACCEL_CQE_STATUS_PHASE_MASK))
+
+/*
+ * ===== Queue State Structures =====
+ */
+
+/* Forward declarations */
+typedef struct PCIeAccel PCIeAccel;
+typedef struct AccelSQueue AccelSQueue;
+typedef struct AccelCQueue AccelCQueue;
+typedef struct AccelRequest AccelRequest;
+typedef struct AccelP2PPeer AccelP2PPeer;
+
+/*
+ * Request Tracking Structure
+ *
+ * Tracks in-flight commands through their lifecycle. Requests are pre-allocated
+ * per submission queue to avoid dynamic allocation in the hot path.
+ */
+struct AccelRequest {
+    AccelSQueue *sq;                    /* Owning submission queue */
+    uint16_t status;                    /* Completion status code */
+
+    AccelCqe cqe;                       /* Completion queue entry (built here) */
+    AccelCmd cmd;                       /* Original command (copied from host) */
+
+    QEMUSGList qsg;                     /* Scatter-gather list for DMA */
+
+    QTAILQ_ENTRY(AccelRequest) entry;   /* Queue linkage */
+
+    /* P2P transfer state */
+    struct {
+        bool is_p2p;                    /* True if this is a P2P command */
+        uint16_t peer_bdf;              /* Peer device BDF */
+        AddressSpace *peer_as;          /* Peer device address space */
+        uint32_t pasid;                 /* PASID if SVA enabled */
+    } p2p;
+
+    /* DMA bounce buffer for chunked transfers */
+    void *bounce_buf;
+    size_t bounce_len;
+};
+
+/*
+ * Submission Queue
+ *
+ * One submission queue per queue pair. Commands are fetched from host memory
+ * when the doorbell is rung. Processing is deferred to a bottom-half for
+ * async execution.
+ */
+struct AccelSQueue {
+    PCIeAccel *ctrl;                    /* Parent controller */
+
+    uint16_t sqid;                      /* Submission queue ID */
+    uint16_t cqid;                      /* Associated completion queue ID */
+
+    uint32_t head;                      /* SQ head pointer (device-owned) */
+    uint32_t tail;                      /* SQ tail pointer (host-owned) */
+    uint32_t size;                      /* Queue size in entries */
+
+    uint64_t dma_addr;                  /* Queue base DMA address in host memory */
+
+    QEMUBH *bh;                         /* Bottom-half for async processing */
+
+    /* Pre-allocated request pool */
+    AccelRequest *io_req;               /* Array of request structures */
+    QTAILQ_HEAD(, AccelRequest) req_list;       /* Available requests */
+    QTAILQ_HEAD(, AccelRequest) out_req_list;   /* In-flight requests */
+
+    QTAILQ_ENTRY(AccelSQueue) entry;    /* Linkage for CQ's SQ list */
+};
+
+/*
+ * Completion Queue
+ *
+ * One or more submission queues can be associated with a single completion queue.
+ * Completions are posted asynchronously via bottom-half. The phase bit toggles
+ * on wrap to allow lock-free completion detection by the driver.
+ */
+struct AccelCQueue {
+    PCIeAccel *ctrl;                    /* Parent controller */
+
+    uint8_t phase;                      /* Current phase bit (0 or 1) */
+    uint16_t cqid;                      /* Completion queue ID */
+    uint16_t irq_enabled;               /* Interrupt enabled flag */
+
+    uint32_t head;                      /* CQ head pointer (host-owned) */
+    uint32_t tail;                      /* CQ tail pointer (device-owned) */
+    uint32_t size;                      /* Queue size in entries */
+    uint32_t vector;                    /* MSI-X vector number */
+
+    uint64_t dma_addr;                  /* Queue base DMA address in host memory */
+
+    QEMUBH *bh;                         /* Bottom-half for completion posting */
+
+    QTAILQ_HEAD(, AccelSQueue) sq_list;     /* Associated submission queues */
+    QTAILQ_HEAD(, AccelRequest) req_list;   /* Requests ready for completion */
+};
+
+/*
+ * P2P Peer Device Tracking
+ *
+ * Tracks registered peer devices for P2P DMA transfers. Each peer has its own
+ * address space for DMA routing and a counter for active transfers to prevent
+ * overload.
+ */
+struct AccelP2PPeer {
+    uint16_t bdf;                       /* Bus:Device:Function (identifies peer) */
+    PCIDevice *pci_dev;                 /* Peer PCI device pointer */
+    AddressSpace *as;                   /* Peer's DMA address space */
+
+    bool enabled;                       /* Peer is enabled and ready */
+    uint32_t active_xfers;              /* Current active transfers to this peer */
+
+    QTAILQ_ENTRY(AccelP2PPeer) entry;   /* Linkage for peer list */
+};
+
+/*
+ * ===== Main Device State =====
+ *
+ * The PCIeAccel structure represents the entire device state. It extends
+ * PCIDevice and contains all queues, configuration, and runtime state.
+ */
+struct PCIeAccel {
+    PCIDevice parent_obj;
+
+    /* Memory Regions */
+    MemoryRegion bar0;                  /* Main register BAR (64KB) */
+    MemoryRegion bar2;                  /* CXL component registers (256KB) */
+    MemoryRegion msix_bar;              /* MSI-X table/PBA (16KB) */
+
+    /* Device Registers (in-memory representation of BAR0) */
+    struct {
+        uint64_t cap;                   /* Capability register */
+        uint32_t vs;                    /* Version register */
+        uint32_t intms;                 /* Interrupt mask set */
+        uint32_t intmc;                 /* Interrupt mask clear */
+        uint32_t cc;                    /* Configuration */
+        uint32_t csts;                  /* Status */
+        uint32_t aqa;                   /* Admin queue attributes */
+        uint64_t asq;                   /* Admin SQ base address */
+        uint64_t acq;                   /* Admin CQ base address */
+        uint32_t p2pcfg;                /* P2P configuration */
+        uint32_t cxlcfg;                /* CXL configuration */
+        uint32_t intcoal;               /* Interrupt coalescing */
+        uint32_t devstat;               /* Device status */
+    } bar;
+
+    /* Queue Management */
+    uint32_t conf_ioqpairs;             /* Configured I/O queue pairs */
+    uint32_t max_ioqpairs;              /* Maximum I/O queue pairs (from property) */
+
+    AccelSQueue **sq;                   /* Submission queue array [0..max_ioqpairs] */
+    AccelCQueue **cq;                   /* Completion queue array [0..max_ioqpairs] */
+
+    AccelSQueue admin_sq;               /* Admin submission queue (sqid=0) */
+    AccelCQueue admin_cq;               /* Admin completion queue (cqid=0) */
+
+    /* Interrupt Management */
+    int cq_pending;                     /* Number of CQs with pending interrupts */
+    uint32_t irq_status;                /* IRQ status for legacy INTx */
+
+    /* Interrupt Coalescing Parameters */
+    uint8_t intcoal_thresh;             /* Completion threshold */
+    uint8_t intcoal_time;               /* Time threshold in 100us units */
+
+    /* P2P DMA State */
+    struct {
+        uint8_t max_peers;              /* Maximum peer devices (from property) */
+        uint8_t max_xfers_per_peer;     /* Max concurrent xfers per peer */
+        uint8_t num_peers;              /* Current number of registered peers */
+
+        AccelP2PPeer peers[ACCEL_MAX_P2P_PEERS];  /* Peer device array */
+        QTAILQ_HEAD(, AccelP2PPeer) peer_list;    /* Active peer list */
+    } p2p;
+
+    /* PASID/SVA Support */
+    struct {
+        bool enabled;                   /* PASID support enabled */
+        uint8_t pasid_width;            /* Number of PASID bits (8-20) */
+        AddressSpace **pasid_as;        /* Per-PASID address spaces */
+    } sva;
+
+    /* CXL Memory Expander (Type 1) */
+    struct {
+        bool enabled;                   /* CXL memory expander enabled */
+        HostMemoryBackend *hostmem;     /* Memory backend */
+        AddressSpace as;                /* CXL memory address space */
+        uint64_t size;                  /* Memory size in bytes */
+        MemoryRegion mr;                /* Memory region */
+
+        /* CXL component registers */
+        MemoryRegion comp_regs;         /* Component register block */
+    } cxl;
+
+    /* Device Configuration Properties */
+    uint32_t page_size;                 /* Host page size (from CC.MPS) */
+    uint32_t page_bits;                 /* Page size in bits (log2) */
+
+    /* Statistics */
+    struct {
+        uint64_t cmd_processed;         /* Total commands processed */
+        uint64_t cmd_completed;         /* Total commands completed */
+        uint64_t p2p_xfers;             /* Total P2P transfers */
+        uint64_t p2p_bytes;             /* Total P2P bytes transferred */
+        uint64_t dma_errors;            /* Total DMA errors */
+        uint64_t cmd_errors;            /* Total command errors */
+    } stats;
+
+    /* Device Properties (from QEMU command line) */
+    char *serial;                       /* Serial number */
+    uint32_t cmb_size_mb;               /* Controller Memory Buffer size (unused) */
+};
+
+/*
+ * ===== Helper Functions =====
+ *
+ * Inline helper functions for queue management and state checking.
+ */
+
+/* Get completion queue for a request */
+static inline AccelCQueue *accel_cq(AccelRequest *req)
+{
+    return req->sq->ctrl->cq[req->sq->cqid];
+}
+
+/* Increment CQ tail with wrap-around and phase toggle */
+static inline void accel_inc_cq_tail(AccelCQueue *cq)
+{
+    cq->tail++;
+    if (cq->tail >= cq->size) {
+        cq->tail = 0;
+        cq->phase = !cq->phase;  /* Toggle phase bit on wrap */
+    }
+}
+
+/* Increment SQ head with wrap-around */
+static inline void accel_inc_sq_head(AccelSQueue *sq)
+{
+    sq->head = (sq->head + 1) % sq->size;
+}
+
+/* Check if completion queue is full */
+static inline bool accel_cq_full(AccelCQueue *cq)
+{
+    return (cq->tail + 1) % cq->size == cq->head;
+}
+
+/* Check if submission queue is empty */
+static inline bool accel_sq_empty(AccelSQueue *sq)
+{
+    return sq->head == sq->tail;
+}
+
+/* Calculate number of pending entries in submission queue */
+static inline uint32_t accel_sq_pending(AccelSQueue *sq)
+{
+    if (sq->tail >= sq->head) {
+        return sq->tail - sq->head;
+    } else {
+        return sq->size - sq->head + sq->tail;
+    }
+}
+
+/* Calculate number of pending entries in completion queue */
+static inline uint32_t accel_cq_pending(AccelCQueue *cq)
+{
+    if (cq->tail >= cq->head) {
+        return cq->tail - cq->head;
+    } else {
+        return cq->size - cq->head + cq->tail;
+    }
+}
+
+/* Check if queue ID is valid */
+static inline bool accel_check_sqid(PCIeAccel *n, uint16_t sqid)
+{
+    return sqid <= n->max_ioqpairs && n->sq != NULL && n->sq[sqid] != NULL;
+}
+
+static inline bool accel_check_cqid(PCIeAccel *n, uint16_t cqid)
+{
+    return cqid <= n->max_ioqpairs && n->cq != NULL && n->cq[cqid] != NULL;
+}
+
+/*
+ * ===== Function Declarations =====
+ *
+ * Core device functions implemented in pcie-accelerator.c
+ */
+
+/* Device lifecycle */
+void pcie_accel_realize(PCIDevice *pci_dev, Error **errp);
+void pcie_accel_exit(PCIDevice *pci_dev);
+void pcie_accel_reset(DeviceState *dev);
+
+/* Queue management */
+void accel_init_sq(AccelSQueue *sq, PCIeAccel *n, uint64_t dma_addr,
+                   uint16_t sqid, uint16_t cqid, uint16_t size);
+void accel_init_cq(AccelCQueue *cq, PCIeAccel *n, uint64_t dma_addr,
+                   uint16_t cqid, uint16_t vector, uint16_t size,
+                   uint16_t irq_enabled);
+void accel_free_sq(AccelSQueue *sq, PCIeAccel *n);
+void accel_free_cq(AccelCQueue *cq, PCIeAccel *n);
+
+/* Command processing */
+void accel_process_sq(void *opaque);
+void accel_post_cqes(void *opaque);
+void accel_enqueue_req_completion(AccelCQueue *cq, AccelRequest *req);
+
+/* Interrupt handling */
+void accel_irq_assert(PCIeAccel *n, AccelCQueue *cq);
+void accel_irq_deassert(PCIeAccel *n, AccelCQueue *cq);
+void accel_irq_check(PCIeAccel *n);
+
+/* Admin command handlers */
+uint16_t accel_admin_cmd(PCIeAccel *n, AccelRequest *req);
+uint16_t accel_cmd_create_sq(PCIeAccel *n, AccelRequest *req);
+uint16_t accel_cmd_create_cq(PCIeAccel *n, AccelRequest *req);
+uint16_t accel_cmd_delete_sq(PCIeAccel *n, AccelRequest *req);
+uint16_t accel_cmd_delete_cq(PCIeAccel *n, AccelRequest *req);
+uint16_t accel_cmd_identify(PCIeAccel *n, AccelRequest *req);
+
+/* I/O command handlers */
+uint16_t accel_io_cmd(PCIeAccel *n, AccelRequest *req);
+uint16_t accel_cmd_loopback(PCIeAccel *n, AccelRequest *req);
+
+/* P2P DMA functions (implemented in pcie-accelerator-p2p.c) */
+uint16_t accel_cmd_p2p_setup(PCIeAccel *n, AccelRequest *req);
+uint16_t accel_cmd_p2p_write(PCIeAccel *n, AccelRequest *req);
+uint16_t accel_cmd_p2p_read(PCIeAccel *n, AccelRequest *req);
+AccelP2PPeer *accel_find_p2p_peer(PCIeAccel *n, uint16_t bdf);
+int accel_register_p2p_peer(PCIeAccel *n, uint16_t bdf, PCIDevice *pdev);
+void accel_unregister_p2p_peer(PCIeAccel *n, uint16_t bdf);
+size_t accel_p2p_get_stats(PCIeAccel *n, void *buf, size_t size);
+void accel_p2p_dump_state(PCIeAccel *n);
+
+/* CXL functions (implemented in pcie-accel-cxl-mem.c) */
+void pcie_accel_cxl_init(PCIeAccel *n, Error **errp);
+void pcie_accel_cxl_exit(PCIeAccel *n);
+uint16_t accel_cmd_cxl_read(PCIeAccel *n, AccelRequest *req);
+uint16_t accel_cmd_cxl_write(PCIeAccel *n, AccelRequest *req);
+
+/* Utility functions */
+uint16_t accel_dma_read_safe(PCIeAccel *n, uint64_t addr, void *buf, size_t len);
+uint16_t accel_dma_write_safe(PCIeAccel *n, uint64_t addr, const void *buf, size_t len);
+void accel_set_ctrl_ready(PCIeAccel *n, bool ready);
+void accel_set_ctrl_fatal(PCIeAccel *n);
+
+#endif /* HW_PCIE_ACCELERATOR_H */
