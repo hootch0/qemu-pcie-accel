@@ -178,10 +178,14 @@ void accel_unregister_p2p_peer(PCIeAccel *n, uint16_t bdf)
  * Returns the address space for a specific PASID. If PASID is not enabled
  * or the PASID is invalid, returns the default device address space.
  *
+ * Note: Currently unused as P2P transfers use direct BAR2 memory access.
+ * Kept for future PASID/SVA support.
+ *
  * Returns: Address space pointer
  */
-static AddressSpace *accel_get_pasid_as(PCIeAccel *n, PCIDevice *pdev,
-                                          uint32_t pasid)
+static G_GNUC_UNUSED AddressSpace *accel_get_pasid_as(PCIeAccel *n,
+                                                       PCIDevice *pdev,
+                                                       uint32_t pasid)
 {
     if (!n->sva.enabled) {
         return pci_get_address_space(pdev);
