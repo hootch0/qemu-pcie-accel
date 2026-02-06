@@ -443,60 +443,69 @@ static int accel_process_cq_threaded(struct accel_queue *queue)
 
 		/* Find the request by CID */
 		req = accel_find_request(queue, cid);
-		if (req) {
-			/* Remove from tracking structures */
-			hash_del(&req->hash_node);
-			list_del(&req->list);
-
-			/* Store completion data in request */
-			memcpy(&req->cqe, cqe, sizeof(*cqe));
-			req->status = status;
-
-			spin_unlock_irqrestore(&queue->cq_lock, flags);
-
-			/* Complete the io_uring command */
-			if (req->ioucmd) {
-				/*
-				 * Convert device status to errno.
-				 * Status 0 = success, others are errors.
-				 */
-				int err = (status == 0) ? 0 : -EIO;
-
-				if (status != 0) {
-					dev_dbg(&dev->pdev->dev,
-						"Command cid=%u opcode=%u failed: status=0x%x\n",
-						cid, req->cmd.opcode, status);
-				}
-
-				/*
-				 * For read operations, defer completion to
-				 * workqueue so copy_to_user runs in process
-				 * context. Threaded IRQ context cannot safely
-				 * access user memory.
-				 */
-				if (err == 0 && req->is_read && req->user_buf &&
-				    req->data_buf && req->data_len > 0) {
-					req->result = result;
-					INIT_WORK(&req->completion_work,
-						  accel_read_completion_work);
-					queue_work(accel_completion_wq,
-						   &req->completion_work);
-					/* Request freed by work handler */
-					spin_lock_irqsave(&queue->cq_lock,
-							  flags);
-					continue;
-				}
-
-				io_uring_cmd_done(req->ioucmd, err, result,
-						  IO_URING_F_UNLOCKED);
-				atomic64_inc(&dev->uring_completions);
-			}
-
-			accel_free_request(req);
-
-			spin_lock_irqsave(&queue->cq_lock, flags);
+		if (!req) {
+			/*
+			 * No matching request in hash table. This happens for
+			 * admin commands submitted via accel_submit_admin_cmd()
+			 * which use synchronous polling via accel_wait_for_completion().
+			 * Leave the CQE in place for the polling code to consume.
+			 */
+			break;
 		}
 
+		/* Remove from tracking structures */
+		hash_del(&req->hash_node);
+		list_del(&req->list);
+
+		/* Store completion data in request */
+		memcpy(&req->cqe, cqe, sizeof(*cqe));
+		req->status = status;
+
+		spin_unlock_irqrestore(&queue->cq_lock, flags);
+
+		/* Complete the io_uring command */
+		if (req->ioucmd) {
+			/*
+			 * Convert device status to errno.
+			 * Status 0 = success, others are errors.
+			 */
+			int err = (status == 0) ? 0 : -EIO;
+
+			if (status != 0) {
+				dev_dbg(&dev->pdev->dev,
+					"Command cid=%u opcode=%u failed: status=0x%x\n",
+					cid, req->cmd.opcode, status);
+			}
+
+			/*
+			 * For read operations, defer completion to
+			 * workqueue so copy_to_user runs in process
+			 * context. Threaded IRQ context cannot safely
+			 * access user memory.
+			 */
+			if (err == 0 && req->is_read && req->user_buf &&
+			    req->data_buf && req->data_len > 0) {
+				req->result = result;
+				INIT_WORK(&req->completion_work,
+					  accel_read_completion_work);
+				queue_work(accel_completion_wq,
+					   &req->completion_work);
+				/* Request freed by work handler */
+				spin_lock_irqsave(&queue->cq_lock,
+						  flags);
+				goto next_cqe;
+			}
+
+			io_uring_cmd_done(req->ioucmd, err, result,
+					  IO_URING_F_UNLOCKED);
+			atomic64_inc(&dev->uring_completions);
+		}
+
+		accel_free_request(req);
+
+		spin_lock_irqsave(&queue->cq_lock, flags);
+
+next_cqe:
 		processed++;
 
 		/* Advance CQ head with wrap-around and phase flip */
