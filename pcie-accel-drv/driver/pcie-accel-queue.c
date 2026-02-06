@@ -736,10 +736,11 @@ void accel_complete_request(struct accel_request *req)
  * @cqe: Output CQE buffer
  * @timeout_ms: Timeout in milliseconds
  *
- * Polls/waits for the command with the given CID to complete.
- * Used for synchronous admin commands.
+ * Polls the CQ directly for the command with the given CID to complete.
+ * Used for synchronous admin commands that aren't tracked in the hash table.
+ * Does NOT call accel_process_cq_threaded to avoid consuming the CQE.
  *
- * Returns: 0 on success, -ETIMEDOUT on timeout, -EINTR if interrupted
+ * Returns: 0 on success, -ETIMEDOUT on timeout, negative status on error
  */
 static int accel_wait_for_completion(struct accel_queue *queue, u16 cid,
 				     struct accel_cqe *cqe, u32 timeout_ms)
@@ -747,22 +748,39 @@ static int accel_wait_for_completion(struct accel_queue *queue, u16 cid,
 	struct accel_cqe *q_cqe;
 	unsigned long deadline = jiffies + msecs_to_jiffies(timeout_ms);
 	unsigned long flags;
+	u16 status;
 
 	while (time_before(jiffies, deadline)) {
-		/* Process any pending completions */
-		accel_process_cq_threaded(queue);
-
 		spin_lock_irqsave(&queue->cq_lock, flags);
 
-		/* Search for our CID in processed completions */
-		for (u32 i = 0; i < queue->cq_size; i++) {
-			q_cqe = queue->cq_buffer + (i * ACCEL_CQE_SIZE);
-			if (le16_to_cpu(q_cqe->cid) == cid &&
-			    accel_cqe_valid(q_cqe, queue->cq_phase)) {
+		/* Check the current CQ head position for a valid completion */
+		q_cqe = queue->cq_buffer + (queue->cq_head * ACCEL_CQE_SIZE);
+
+		if (accel_cqe_valid(q_cqe, queue->cq_phase)) {
+			/* Memory barrier before reading CQE data */
+			rmb();
+
+			/* Check if this is our completion */
+			if (le16_to_cpu(q_cqe->cid) == cid) {
 				if (cqe)
 					memcpy(cqe, q_cqe, sizeof(*cqe));
+
+				/* Extract status (remove phase bit) */
+				status = le16_to_cpu(q_cqe->status) >> 1;
+
+				/* Advance CQ head */
+				queue->cq_head++;
+				if (queue->cq_head >= queue->cq_size) {
+					queue->cq_head = 0;
+					queue->cq_phase = !queue->cq_phase;
+				}
+
 				spin_unlock_irqrestore(&queue->cq_lock, flags);
-				return 0;
+
+				/* Ring CQ doorbell to acknowledge */
+				accel_ring_cq_doorbell(queue);
+
+				return (status == 0) ? 0 : -EIO;
 			}
 		}
 
