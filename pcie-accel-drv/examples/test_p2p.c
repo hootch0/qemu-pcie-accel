@@ -141,11 +141,12 @@ static int run_p2p_test_sync(struct accel_device *dev1,
      * Test 1: P2P Write (dev1 -> dev2)
      */
     printf("  [%d] P2P Write: dev1 -> dev2 (%zu bytes)... ", iteration, size);
+    printf("[DEBUG: qid=%u peer_bdf=0x%04x src=%p offset=0] ", qid, bdf2, src_buf);
     fflush(stdout);
 
     ret = accel_p2p_write(dev1, qid, bdf2, src_buf, 0, size);
     if (ret != ACCEL_SUCCESS) {
-        printf("FAILED: %s\n", accel_strerror(ret));
+        printf("FAILED: %s (ret=%d)\n", accel_strerror(ret), ret);
         goto out;
     }
     printf("OK\n");
@@ -154,11 +155,12 @@ static int run_p2p_test_sync(struct accel_device *dev1,
      * Test 2: P2P Read (dev2 -> dev1)
      */
     printf("  [%d] P2P Read: dev2 -> dev1 (%zu bytes)... ", iteration, size);
+    printf("[DEBUG: qid=%u peer_bdf=0x%04x dst=%p offset=0] ", qid, bdf2, dst_buf);
     fflush(stdout);
 
     ret = accel_p2p_read(dev1, qid, bdf2, dst_buf, 0, size);
     if (ret != ACCEL_SUCCESS) {
-        printf("FAILED: %s\n", accel_strerror(ret));
+        printf("FAILED: %s (ret=%d)\n", accel_strerror(ret), ret);
         goto out;
     }
     printf("OK\n");

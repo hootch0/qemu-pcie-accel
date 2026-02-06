@@ -127,10 +127,19 @@ static int accel_uring_cmd_submit(struct io_uring_cmd *ioucmd,
 	switch (cmd.opcode) {
 	case ACCEL_CMD_LOOPBACK:
 		data_len = le32_to_cpu(cmd.dw.loopback.length);
+		dev_dbg(&dev->pdev->dev, "SUBMIT: LOOPBACK qid=%u len=%zu\n",
+			qid, data_len);
 		break;
 	case ACCEL_CMD_P2P_WRITE:
 	case ACCEL_CMD_P2P_READ:
 		data_len = le32_to_cpu(cmd.dw.p2p.length);
+		dev_dbg(&dev->pdev->dev,
+			"SUBMIT: P2P_%s qid=%u peer_bdf=0x%x peer_addr=0x%llx "
+			"prp1=0x%llx len=%zu\n",
+			cmd.opcode == ACCEL_CMD_P2P_WRITE ? "WRITE" : "READ",
+			qid, le32_to_cpu(cmd.dw.p2p.peer_bdf),
+			le64_to_cpu(cmd.dw.p2p.peer_addr),
+			le64_to_cpu(cmd.prp1), data_len);
 		break;
 	case ACCEL_CMD_CXL_READ:
 	case ACCEL_CMD_CXL_WRITE:
@@ -185,6 +194,10 @@ static int accel_uring_cmd_submit(struct io_uring_cmd *ioucmd,
 
 		/* Replace user address with DMA address */
 		cmd.prp1 = cpu_to_le64(data_dma);
+
+		dev_dbg(&dev->pdev->dev,
+			"SUBMIT: DMA buf=%p dma_addr=0x%llx len=%zu user_buf=%p\n",
+			data_buf, (u64)data_dma, data_len, user_buf);
 	}
 
 	/*
@@ -196,11 +209,17 @@ static int accel_uring_cmd_submit(struct io_uring_cmd *ioucmd,
 	ret = accel_submit_async_cmd(queue, &cmd, ioucmd, data_buf,
 				     data_dma, data_len, user_buf);
 	if (ret) {
+		dev_err(&dev->pdev->dev,
+			"SUBMIT: accel_submit_async_cmd failed: %d\n", ret);
 		if (data_buf)
 			dma_free_coherent(&dev->pdev->dev, data_len,
 					  data_buf, data_dma);
 		return ret;
 	}
+
+	dev_dbg(&dev->pdev->dev,
+		"SUBMIT: queued opcode=%u cid=%u to qid=%u\n",
+		cmd.opcode, le16_to_cpu(cmd.cid), qid);
 
 	/*
 	 * Return -EIOCBQUEUED to tell io_uring that the command is in

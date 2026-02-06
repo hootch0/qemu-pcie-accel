@@ -294,10 +294,10 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
     trace_pcie_accel_p2p_xfer(peer_bdf, peer_addr, total_len);
 
     qemu_log_mask(LOG_GUEST_ERROR,
-                  "pcie-accel: P2P %s: peer=0x%x host_addr=0x%" PRIx64
-                  " peer_addr=0x%" PRIx64 " len=%u\n",
+                  "pcie-accel: P2P %s START: peer=0x%x host_addr=0x%" PRIx64
+                  " peer_addr=0x%" PRIx64 " len=%u bar2_size=%" PRIu64 "\n",
                   is_write ? "WRITE" : "READ", peer_bdf, host_addr,
-                  peer_addr, total_len);
+                  peer_addr, total_len, bar2_size);
 
     /*
      * Transfer loop: Process data in chunks
@@ -317,14 +317,19 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
             result = pci_dma_read(pci, host_addr + offset, bounce_buf, xfer_len);
             if (result != MEMTX_OK) {
                 qemu_log_mask(LOG_GUEST_ERROR,
-                              "pcie-accel: P2P write failed reading host at 0x%"
-                              PRIx64 " len %u\n", host_addr + offset, xfer_len);
+                              "pcie-accel: P2P write DMA read FAILED at 0x%"
+                              PRIx64 " len %u result=%d\n",
+                              host_addr + offset, xfer_len, result);
                 status = ACCEL_SC_DMA_ERROR;
                 break;
             }
 
             /* Write directly to peer's BAR2 RAM */
             memcpy((uint8_t *)peer_ram + peer_addr + offset, bounce_buf, xfer_len);
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "pcie-accel: P2P write chunk: host 0x%" PRIx64
+                          " -> peer_ram+0x%" PRIx64 " len %u OK\n",
+                          host_addr + offset, peer_addr + offset, xfer_len);
 
         } else {
             /* P2P Read: Peer BAR2 -> Host memory */
@@ -336,11 +341,16 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
             result = pci_dma_write(pci, host_addr + offset, bounce_buf, xfer_len);
             if (result != MEMTX_OK) {
                 qemu_log_mask(LOG_GUEST_ERROR,
-                              "pcie-accel: P2P read failed writing host at 0x%"
-                              PRIx64 " len %u\n", host_addr + offset, xfer_len);
+                              "pcie-accel: P2P read DMA write FAILED at 0x%"
+                              PRIx64 " len %u result=%d\n",
+                              host_addr + offset, xfer_len, result);
                 status = ACCEL_SC_DMA_ERROR;
                 break;
             }
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "pcie-accel: P2P read chunk: peer_ram+0x%" PRIx64
+                          " -> host 0x%" PRIx64 " len %u OK\n",
+                          peer_addr + offset, host_addr + offset, xfer_len);
         }
 
         offset += xfer_len;
@@ -355,11 +365,18 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
         n->stats.p2p_xfers++;
         n->stats.p2p_bytes += total_len;
         req->cqe.result = cpu_to_le32(total_len);
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pcie-accel: P2P %s DONE: peer=0x%x len=%u status=0x%x "
+                      "total_xfers=%" PRIu64 "\n",
+                      is_write ? "WRITE" : "READ", peer_bdf, total_len,
+                      status, n->stats.p2p_xfers);
     } else {
         n->stats.cmd_errors++;
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "pcie-accel: P2P transfer failed: peer=0x%x status=0x%x "
-                      "active_xfers=%u\n", peer_bdf, status, peer->active_xfers);
+                      "pcie-accel: P2P %s FAILED: peer=0x%x status=0x%x "
+                      "active_xfers=%u cmd_errors=%" PRIu64 "\n",
+                      is_write ? "WRITE" : "READ", peer_bdf, status,
+                      peer->active_xfers, n->stats.cmd_errors);
     }
 
     return status;

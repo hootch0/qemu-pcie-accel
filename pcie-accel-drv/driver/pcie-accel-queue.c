@@ -73,6 +73,10 @@ static void accel_read_completion_work(struct work_struct *work)
 	struct accel_dev *dev = req->queue->dev;
 	int err = 0;
 
+	dev_dbg(&dev->pdev->dev,
+		"READ_WORK: cid=%u user_buf=%p data_buf=%p len=%zu mm=%p\n",
+		req->cid, req->user_buf, req->data_buf, req->data_len, req->mm);
+
 	/* Copy data to user space using the saved mm context */
 	if (req->user_buf && req->data_buf && req->data_len > 0 && req->mm) {
 		kthread_use_mm(req->mm);
@@ -87,6 +91,10 @@ static void accel_read_completion_work(struct work_struct *work)
 	/* Complete the io_uring command */
 	io_uring_cmd_done(req->ioucmd, err, req->result, IO_URING_F_UNLOCKED);
 	atomic64_inc(&dev->uring_completions);
+
+	dev_dbg(&dev->pdev->dev,
+		"READ_WORK: cid=%u completed err=%d result=0x%x\n",
+		req->cid, err, req->result);
 
 	/* Free the request */
 	accel_free_request(req);
@@ -441,6 +449,12 @@ static int accel_process_cq_threaded(struct accel_queue *queue)
 		/* Update SQ head from completion */
 		queue->sq_head = le16_to_cpu(cqe->sq_head);
 
+		dev_dbg(&dev->pdev->dev,
+			"CQ[%u] CQE: cid=%u status=0x%x result=0x%x sq_head=%u "
+			"cq_head=%u phase=%u\n",
+			queue->qid, cid, status, result, queue->sq_head,
+			queue->cq_head, queue->cq_phase);
+
 		/* Find the request by CID */
 		req = accel_find_request(queue, cid);
 		if (!req) {
@@ -450,8 +464,15 @@ static int accel_process_cq_threaded(struct accel_queue *queue)
 			 * which use synchronous polling via accel_wait_for_completion().
 			 * Leave the CQE in place for the polling code to consume.
 			 */
+			dev_dbg(&dev->pdev->dev,
+				"CQ[%u] CQE cid=%u: no tracked request (admin cmd?)\n",
+				queue->qid, cid);
 			break;
 		}
+
+		dev_dbg(&dev->pdev->dev,
+			"CQ[%u] CQE cid=%u: found request opcode=%u is_read=%d\n",
+			queue->qid, cid, req->cmd.opcode, req->is_read);
 
 		/* Remove from tracking structures */
 		hash_del(&req->hash_node);
@@ -499,6 +520,9 @@ static int accel_process_cq_threaded(struct accel_queue *queue)
 			io_uring_cmd_done(req->ioucmd, err, result,
 					  IO_URING_F_UNLOCKED);
 			atomic64_inc(&dev->uring_completions);
+			dev_dbg(&dev->pdev->dev,
+				"CQ[%u] cid=%u: io_uring_cmd_done err=%d result=0x%x\n",
+				queue->qid, cid, err, result);
 		}
 
 		accel_free_request(req);
