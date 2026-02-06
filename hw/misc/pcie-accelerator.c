@@ -279,6 +279,10 @@ void accel_enqueue_req_completion(AccelCQueue *cq, AccelRequest *req)
 
     assert(cq->cqid == sq->cqid);
 
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: Enqueue completion: cqid=%u sqid=%u cid=%u status=%u\n",
+                  cq->cqid, sq->sqid, le16_to_cpu(req->cqe.cid), req->status);
+
     /* Remove from in-flight list */
     QTAILQ_REMOVE(&sq->out_req_list, req, entry);
 
@@ -304,6 +308,10 @@ void accel_post_cqes(void *opaque)
     AccelRequest *req, *next;
     bool pending_before = (cq->head != cq->tail);
     uint16_t status;
+
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: post_cqes called for CQ %u (head=%u tail=%u)\n",
+                  cq->cqid, cq->head, cq->tail);
 
     QTAILQ_FOREACH_SAFE(req, &cq->req_list, entry, next) {
         AccelSQueue *sq = req->sq;
@@ -340,6 +348,11 @@ void accel_post_cqes(void *opaque)
         trace_pcie_accel_post_cqe(cq->cqid, sq->sqid, req->cqe.cid,
                                    req->cqe.status);
 
+        qemu_log_mask(LOG_UNIMP,
+                      "pcie-accel: Posted CQE: cqid=%u sqid=%u cid=%u status=0x%x addr=0x%" PRIx64 "\n",
+                      cq->cqid, sq->sqid, le16_to_cpu(req->cqe.cid),
+                      le16_to_cpu(req->cqe.status), addr);
+
         /* Remove from completion list */
         QTAILQ_REMOVE(&cq->req_list, req, entry);
 
@@ -368,12 +381,19 @@ void accel_post_cqes(void *opaque)
     /* Fire interrupt if new completions posted */
     if (cq->tail != cq->head) {
         if (!pending_before && cq->irq_enabled) {
+            qemu_log_mask(LOG_UNIMP,
+                          "pcie-accel: Firing IRQ for CQ %u (vector=%u)\n",
+                          cq->cqid, cq->vector);
             accel_irq_assert(n, cq);
         }
     } else if (pending_before && cq->irq_enabled) {
         /* CQ became empty */
         accel_irq_deassert(n, cq);
     }
+
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: post_cqes done for CQ %u (head=%u tail=%u irq_en=%d)\n",
+                  cq->cqid, cq->head, cq->tail, cq->irq_enabled);
 }
 
 /*
