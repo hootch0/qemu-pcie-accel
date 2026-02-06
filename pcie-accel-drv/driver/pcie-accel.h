@@ -275,8 +275,9 @@ struct accel_queue {
 struct accel_p2p_peer {
 	struct pci_dev *pdev;
 	u16 bdf;
-	void __iomem *mem;
-	resource_size_t mem_size;
+	void __iomem *mem;		/* BAR2 scratchpad mapping */
+	resource_size_t mem_size;	/* BAR2 size */
+	resource_size_t mem_phys;	/* BAR2 physical address */
 	struct list_head list;
 };
 

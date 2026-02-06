@@ -1509,6 +1509,19 @@ void pcie_accel_realize(PCIDevice *pci_dev, Error **errp)
                      PCI_BASE_ADDRESS_MEM_TYPE_64,
                      &n->bar0);
 
+    /* Initialize BAR2 (P2P scratchpad RAM) */
+    memory_region_init_ram(&n->bar2, OBJECT(n), "pcie-accel-bar2",
+                           ACCEL_BAR2_SIZE, &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
+        return;
+    }
+    pci_register_bar(pci_dev, 2,
+                     PCI_BASE_ADDRESS_SPACE_MEMORY |
+                     PCI_BASE_ADDRESS_MEM_TYPE_64 |
+                     PCI_BASE_ADDRESS_MEM_PREFETCH,
+                     &n->bar2);
+
     /* Initialize MSI-X */
     memory_region_init(&n->msix_bar, OBJECT(n), "pcie-accel-msix",
                        ACCEL_BAR4_SIZE);

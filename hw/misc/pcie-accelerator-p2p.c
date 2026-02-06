@@ -101,6 +101,23 @@ int accel_register_p2p_peer(PCIeAccel *n, uint16_t bdf, PCIDevice *pdev)
     peer->enabled = true;
     peer->active_xfers = 0;
 
+    /*
+     * Get peer's BAR2 scratchpad memory region for P2P transfers.
+     * The peer device must be another pcie-accelerator with BAR2 initialized.
+     */
+    if (object_dynamic_cast(OBJECT(pdev), TYPE_PCIE_ACCEL)) {
+        PCIeAccel *peer_accel = PCIE_ACCEL(pdev);
+        peer->bar2 = &peer_accel->bar2;
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pcie-accel: P2P peer 0x%x has BAR2 scratchpad (%lu bytes)\n",
+                      bdf, (unsigned long)memory_region_size(peer->bar2));
+    } else {
+        peer->bar2 = NULL;
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pcie-accel: P2P peer 0x%x is not a pcie-accelerator device\n",
+                      bdf);
+    }
+
     /* Add to active peer list */
     QTAILQ_INSERT_TAIL(&n->p2p.peer_list, peer, entry);
     n->p2p.num_peers++;
@@ -212,12 +229,12 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
     uint64_t peer_addr = le64_to_cpu(cmd->dw.p2p.peer_addr);
     uint64_t host_addr = le64_to_cpu(cmd->prp1);
     uint32_t total_len = le32_to_cpu(cmd->dw.p2p.length);
-    uint32_t pasid = le32_to_cpu(cmd->dw.p2p.pasid);
     AccelP2PPeer *peer;
-    AddressSpace *peer_as;
     uint32_t offset = 0;
     uint16_t status = ACCEL_SC_SUCCESS;
     void *bounce_buf = NULL;
+    void *peer_ram;
+    uint64_t bar2_size;
 
     /* Lookup peer device */
     peer = accel_find_p2p_peer(n, peer_bdf);
@@ -225,6 +242,14 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
         qemu_log_mask(LOG_GUEST_ERROR,
                       "pcie-accel: P2P peer 0x%x not registered\n", peer_bdf);
         return ACCEL_SC_P2P_PEER_NOT_FOUND;
+    }
+
+    /* Check that peer has BAR2 scratchpad memory */
+    if (!peer->bar2) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pcie-accel: P2P peer 0x%x has no BAR2 scratchpad\n",
+                      peer_bdf);
+        return ACCEL_SC_P2P_PEER_INVALID;
     }
 
     /* Check transfer limit */
@@ -236,11 +261,21 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
         return ACCEL_SC_P2P_MAX_XFERS;
     }
 
-    /* Get peer address space (with PASID if enabled) */
-    if (cmd->flags & ACCEL_CMD_FLAG_PASID_ENABLE) {
-        peer_as = accel_get_pasid_as(n, peer->pci_dev, pasid);
-    } else {
-        peer_as = peer->as;
+    /* Get peer's BAR2 RAM pointer and validate address range */
+    bar2_size = memory_region_size(peer->bar2);
+    if (peer_addr + total_len > bar2_size) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pcie-accel: P2P address 0x%" PRIx64 " + len %u exceeds "
+                      "BAR2 size %" PRIu64 "\n", peer_addr, total_len, bar2_size);
+        return ACCEL_SC_INVALID_PRP;
+    }
+
+    peer_ram = memory_region_get_ram_ptr(peer->bar2);
+    if (!peer_ram) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pcie-accel: P2P peer 0x%x BAR2 is not RAM-backed\n",
+                      peer_bdf);
+        return ACCEL_SC_P2P_PEER_INVALID;
     }
 
     /* Mark transfer as active */
@@ -258,15 +293,17 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
 
     /*
      * Transfer loop: Process data in chunks
-     * For writes: Read from host -> Write to peer
-     * For reads:  Read from peer -> Write to host
+     * For writes: Read from host -> Write to peer BAR2
+     * For reads:  Read from peer BAR2 -> Write to host
+     *
+     * peer_addr is an offset within peer's BAR2 scratchpad memory.
      */
     while (offset < total_len && status == ACCEL_SC_SUCCESS) {
         uint32_t xfer_len = MIN(chunk_size, total_len - offset);
         MemTxResult result;
 
         if (is_write) {
-            /* P2P Write: Host memory -> Peer device */
+            /* P2P Write: Host memory -> Peer BAR2 */
 
             /* Read from host memory (via this device's DMA) */
             result = pci_dma_read(pci, host_addr + offset, bounce_buf, xfer_len);
@@ -278,32 +315,14 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
                 break;
             }
 
-            /* Write to peer device memory */
-            result = address_space_write(peer_as, peer_addr + offset,
-                                          MEMTXATTRS_UNSPECIFIED,
-                                          bounce_buf, xfer_len);
-            if (result != MEMTX_OK) {
-                qemu_log_mask(LOG_GUEST_ERROR,
-                              "pcie-accel: P2P write failed writing peer at 0x%"
-                              PRIx64 " len %u\n", peer_addr + offset, xfer_len);
-                status = ACCEL_SC_P2P_XFER_ERROR;
-                break;
-            }
+            /* Write directly to peer's BAR2 RAM */
+            memcpy((uint8_t *)peer_ram + peer_addr + offset, bounce_buf, xfer_len);
 
         } else {
-            /* P2P Read: Peer device -> Host memory */
+            /* P2P Read: Peer BAR2 -> Host memory */
 
-            /* Read from peer device memory */
-            result = address_space_read(peer_as, peer_addr + offset,
-                                         MEMTXATTRS_UNSPECIFIED,
-                                         bounce_buf, xfer_len);
-            if (result != MEMTX_OK) {
-                qemu_log_mask(LOG_GUEST_ERROR,
-                              "pcie-accel: P2P read failed reading peer at 0x%"
-                              PRIx64 " len %u\n", peer_addr + offset, xfer_len);
-                status = ACCEL_SC_P2P_XFER_ERROR;
-                break;
-            }
+            /* Read directly from peer's BAR2 RAM */
+            memcpy(bounce_buf, (uint8_t *)peer_ram + peer_addr + offset, xfer_len);
 
             /* Write to host memory (via this device's DMA) */
             result = pci_dma_write(pci, host_addr + offset, bounce_buf, xfer_len);

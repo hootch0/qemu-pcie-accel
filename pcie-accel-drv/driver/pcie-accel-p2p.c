@@ -163,18 +163,26 @@ int accel_setup_p2p_peer(struct accel_dev *dev, u16 peer_bdf)
 #endif
 
 	/*
-	 * Map the peer's first memory BAR.
-	 * This allows direct CPU access for debugging, though actual
-	 * P2P transfers go through the device.
+	 * Map the peer's BAR2 (scratchpad memory) for P2P transfers.
+	 * This is where P2P data is stored. BAR2 is a RAM-backed region
+	 * that can be directly accessed for peer-to-peer DMA operations.
 	 */
-	if (pci_resource_len(peer_pdev, 0) > 0) {
-		peer->mem = pci_iomap(peer_pdev, 0, 0);
+	if (pci_resource_len(peer_pdev, 2) > 0) {
+		peer->mem = pci_iomap(peer_pdev, 2, 0);
 		if (peer->mem) {
-			peer->mem_size = pci_resource_len(peer_pdev, 0);
-			dev_dbg(&dev->pdev->dev,
-				"P2P: Mapped peer BAR0: %pR\n",
-				&peer_pdev->resource[0]);
+			peer->mem_size = pci_resource_len(peer_pdev, 2);
+			peer->mem_phys = pci_resource_start(peer_pdev, 2);
+			dev_info(&dev->pdev->dev,
+				"P2P: Mapped peer BAR2 scratchpad: %pR (phys=0x%llx)\n",
+				&peer_pdev->resource[2],
+				(unsigned long long)peer->mem_phys);
+		} else {
+			dev_warn(&dev->pdev->dev,
+				"P2P: Failed to map peer BAR2\n");
 		}
+	} else {
+		dev_warn(&dev->pdev->dev,
+			"P2P: Peer has no BAR2 scratchpad memory\n");
 	}
 
 	/*

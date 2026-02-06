@@ -241,6 +241,7 @@ struct AccelP2PPeer {
     uint16_t bdf;                       /* Bus:Device:Function (identifies peer) */
     PCIDevice *pci_dev;                 /* Peer PCI device pointer */
     AddressSpace *as;                   /* Peer's DMA address space */
+    MemoryRegion *bar2;                 /* Peer's BAR2 scratchpad memory region */
 
     bool enabled;                       /* Peer is enabled and ready */
     uint32_t active_xfers;              /* Current active transfers to this peer */
