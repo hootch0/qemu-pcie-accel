@@ -149,15 +149,17 @@ int accel_setup_p2p_peer(struct accel_dev *dev, u16 peer_bdf)
 	/*
 	 * Check if P2P DMA is possible between these devices.
 	 * This requires them to be on the same PCIe switch or root complex.
+	 * Note: QEMU virtual devices don't expose proper topology info,
+	 * so this check will fail - but QEMU handles P2P internally.
 	 */
 #ifdef CONFIG_PCI_P2PDMA
 	{
 		int distance = pci_p2pdma_distance(dev->pdev, &peer_pdev->dev, false);
 		if (distance < 0) {
-			dev_warn(&dev->pdev->dev,
-				 "P2P DMA may not be supported to peer 0x%04x (distance=%d)\n",
-				 peer_bdf, distance);
-			/* Continue anyway - the device might still work */
+			dev_dbg(&dev->pdev->dev,
+				"P2P DMA topology check failed for peer 0x%04x (distance=%d), "
+				"continuing (QEMU handles P2P internally)\n",
+				peer_bdf, distance);
 		}
 	}
 #endif
