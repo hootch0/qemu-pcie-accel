@@ -27,7 +27,7 @@
 #include "hw/pci/pcie_aer.h"
 #include "hw/pci/msix.h"
 #include "hw/pci/msi.h"
-#include "hw/core/qdev-properties.h"
+#include "hw/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "system/block-backend.h"
 #include "system/hostmem.h"
@@ -482,8 +482,14 @@ uint16_t accel_cmd_loopback(PCIeAccel *n, AccelRequest *req)
     uint16_t status;
     void *buf;
 
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: LOOPBACK cmd: prp1=0x%" PRIx64 " length=%u\n",
+                  prp1, length);
+
     /* Validate length */
     if (length == 0 || length > (1 * MiB)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pcie-accel: LOOPBACK invalid length %u\n", length);
         return ACCEL_SC_INVALID_FIELD;
     }
 
@@ -496,9 +502,13 @@ uint16_t accel_cmd_loopback(PCIeAccel *n, AccelRequest *req)
     /* Read data from host memory */
     status = accel_dma_read_safe(n, prp1, buf, length);
     if (status != ACCEL_SC_SUCCESS) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pcie-accel: LOOPBACK DMA read failed: status=%u\n",
+                      status);
         g_free(buf);
         return status;
     }
+    qemu_log_mask(LOG_UNIMP, "pcie-accel: LOOPBACK DMA read OK\n");
 
     /* Optional: Modify data based on pattern */
     uint32_t pattern = le32_to_cpu(cmd->dw.loopback.pattern);
@@ -516,6 +526,13 @@ uint16_t accel_cmd_loopback(PCIeAccel *n, AccelRequest *req)
 
     if (status == ACCEL_SC_SUCCESS) {
         req->cqe.result = cpu_to_le32(length);
+        qemu_log_mask(LOG_UNIMP,
+                      "pcie-accel: LOOPBACK completed successfully, len=%u\n",
+                      length);
+    } else {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pcie-accel: LOOPBACK DMA write failed: status=%u\n",
+                      status);
     }
 
     return status;
@@ -626,8 +643,15 @@ uint16_t accel_cmd_create_cq(PCIeAccel *n, AccelRequest *req)
     uint64_t prp1 = le64_to_cpu(cmd->prp1);
     AccelCQueue *cq;
 
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: CREATE_CQ: cqid=%u qsize=%u prp1=0x%" PRIx64 "\n",
+                  cqid, qsize, prp1);
+
     /* Validate CQ ID */
     if (cqid == 0 || cqid > n->max_ioqpairs) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pcie-accel: CREATE_CQ invalid cqid %u (max=%u)\n",
+                      cqid, n->max_ioqpairs);
         return ACCEL_SC_INVALID_QUEUE_ID;
     }
 
@@ -657,6 +681,10 @@ uint16_t accel_cmd_create_cq(PCIeAccel *n, AccelRequest *req)
     n->cq[cqid] = cq;
     n->conf_ioqpairs = MAX(n->conf_ioqpairs, cqid);
 
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: CREATE_CQ success: cqid=%u size=%u\n",
+                  cqid, qsize + 1);
+
     /* Update device status */
     n->bar.devstat = (n->bar.devstat & ~(0xFF << ACCEL_DEVSTAT_QUEUE_PAIRS_SHIFT)) |
                      ((n->conf_ioqpairs & 0xFF) << ACCEL_DEVSTAT_QUEUE_PAIRS_SHIFT);
@@ -680,8 +708,15 @@ uint16_t accel_cmd_create_sq(PCIeAccel *n, AccelRequest *req)
     uint64_t prp1 = le64_to_cpu(cmd->prp1);
     AccelSQueue *sq;
 
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: CREATE_SQ: sqid=%u qsize=%u cqid=%u prp1=0x%" PRIx64 "\n",
+                  sqid, qsize, cqid, prp1);
+
     /* Validate SQ ID */
     if (sqid == 0 || sqid > n->max_ioqpairs) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pcie-accel: CREATE_SQ invalid sqid %u (max=%u)\n",
+                      sqid, n->max_ioqpairs);
         return ACCEL_SC_INVALID_QUEUE_ID;
     }
 
@@ -709,6 +744,10 @@ uint16_t accel_cmd_create_sq(PCIeAccel *n, AccelRequest *req)
     accel_init_sq(sq, n, prp1, sqid, cqid, qsize + 1);
 
     n->sq[sqid] = sq;
+
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: CREATE_SQ success: sqid=%u size=%u cqid=%u\n",
+                  sqid, qsize + 1, cqid);
 
     return ACCEL_SC_SUCCESS;
 }
@@ -877,7 +916,13 @@ void accel_process_sq(void *opaque)
             status = accel_admin_cmd(n, req);
         } else {
             /* I/O queue */
+            qemu_log_mask(LOG_UNIMP,
+                          "pcie-accel: I/O cmd dispatch: sqid=%u opcode=0x%x cid=%u\n",
+                          sq->sqid, cmd.opcode, le16_to_cpu(cmd.cid));
             status = accel_io_cmd(n, req);
+            qemu_log_mask(LOG_UNIMP,
+                          "pcie-accel: I/O cmd complete: sqid=%u cid=%u status=%u\n",
+                          sq->sqid, le16_to_cpu(cmd.cid), status);
         }
 
         /* Handle synchronous completion */
@@ -979,6 +1024,10 @@ static void accel_process_doorbell(PCIeAccel *n, hwaddr addr, uint32_t val)
         }
 
         trace_pcie_accel_doorbell_sq(qid, new_tail);
+
+        qemu_log_mask(LOG_UNIMP,
+                      "pcie-accel: SQ %u doorbell: new_tail=%u (head=%u size=%u)\n",
+                      qid, new_tail, sq->head, sq->size);
 
         sq->tail = new_tail;
 
