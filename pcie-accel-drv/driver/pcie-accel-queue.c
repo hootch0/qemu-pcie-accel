@@ -40,10 +40,12 @@ static struct workqueue_struct *accel_completion_wq;
 
 /*
  * Kernel 6.17+ compatibility:
+ * - del_timer renamed to timer_delete
  * - del_timer_sync renamed to timer_delete_sync
  * - from_timer removed, use container_of directly
  */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 17, 0)
+#define del_timer(t) timer_delete(t)
 #define del_timer_sync(t) timer_delete_sync(t)
 #endif
 
