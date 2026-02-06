@@ -329,6 +329,10 @@ static void accel_request_timeout(struct timer_list *t)
 	struct accel_request *req = container_of(t, struct accel_request, timer);
 	struct accel_queue *queue = req->queue;
 	unsigned long flags;
+	unsigned long elapsed_ms = jiffies_to_msecs(jiffies - req->start_time);
+
+	pr_debug("accel: timeout fired: qid=%u cid=%u opcode=0x%02x elapsed=%lu ms\n",
+		 queue->qid, req->cid, req->cmd.opcode, elapsed_ms);
 
 	spin_lock_irqsave(&queue->cq_lock, flags);
 
@@ -337,6 +341,9 @@ static void accel_request_timeout(struct timer_list *t)
 		hash_del(&req->hash_node);
 		list_del(&req->list);
 		spin_unlock_irqrestore(&queue->cq_lock, flags);
+
+		pr_warn("accel: request TIMED OUT: qid=%u cid=%u opcode=0x%02x elapsed=%lu ms\n",
+			queue->qid, req->cid, req->cmd.opcode, elapsed_ms);
 
 		/* Complete io_uring command with timeout error */
 		if (req->ioucmd)
@@ -347,6 +354,8 @@ static void accel_request_timeout(struct timer_list *t)
 		__accel_free_request(req, false);
 	} else {
 		spin_unlock_irqrestore(&queue->cq_lock, flags);
+		pr_debug("accel: timeout race (already completed): qid=%u cid=%u opcode=0x%02x\n",
+			 queue->qid, req->cid, req->cmd.opcode);
 	}
 }
 
