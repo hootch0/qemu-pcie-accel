@@ -10,6 +10,3 @@ system_ss.add(when: 'CONFIG_MEM_DEVICE', if_false: files('memory-device-stubs.c'
 system_ss.add_all(when: 'CONFIG_MEM_DEVICE', if_true: mem_ss)
 
 system_ss.add(when: 'CONFIG_SPARSE_MEM', if_true: files('sparse-mem.c'))
-
-# PCIe Accelerator CXL Memory Expander
-system_ss.add(when: 'CONFIG_PCIE_ACCEL', if_true: files('pcie-accel-cxl-mem.c'))

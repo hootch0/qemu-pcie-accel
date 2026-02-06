@@ -8,8 +8,7 @@
  *
  * This file defines the register layout and constants for the PCIe Accelerator
  * virtual device. The device follows NVMe-style queue management with doorbell
- * registers, supports PCIe P2P DMA, PASID/SVA, MSI-X interrupts with coalescing,
- * and CXL Type 1 memory expander integration.
+ * registers, supports PCIe P2P DMA, PASID/SVA, and MSI-X interrupts with coalescing.
  */
 
 #ifndef HW_PCIE_ACCELERATOR_REGS_H
@@ -57,12 +56,7 @@
  *                1 = PASID/SVA supported via PCIe capability
  *                Reset: 1 (supported)
  *
- * Bit [38]     - CXLMEM: CXL Memory Expander Present
- *                0 = No CXL memory expander
- *                1 = CXL Type 1 memory expander present
- *                Reset: 0 (disabled by default, enabled via property)
- *
- * Bits [47:39] - Reserved (must be 0)
+ * Bits [47:38] - Reserved (must be 0)
  *
  * Bits [51:48] - MPSMIN: Memory Page Size Minimum
  *                Minimum host memory page size = 2^(12 + MPSMIN) bytes
@@ -87,7 +81,6 @@
 #define ACCEL_CAP_DSTRD_MASK    0xF
 #define ACCEL_CAP_P2P_SHIFT     36
 #define ACCEL_CAP_SVA_SHIFT     37
-#define ACCEL_CAP_CXLMEM_SHIFT  38
 #define ACCEL_CAP_MPSMIN_SHIFT  48
 #define ACCEL_CAP_MPSMIN_MASK   0xF
 #define ACCEL_CAP_MPSMAX_SHIFT  52
@@ -296,29 +289,7 @@
 #define ACCEL_MAX_P2P_PEERS     32
 #define ACCEL_MAX_P2P_XFERS     64
 
-/* ===== CXL Memory Configuration Register (CXLCFG) - Offset 0x0048 ===== */
-/*
- * 32-bit read/write register for CXL Type 1 memory expander.
- *
- * Bit [0]      - ENABLE: CXL Memory Expander Enabled
- *                0 = CXL memory expander disabled
- *                1 = CXL memory expander enabled and accessible
- *                Reset: 0
- *
- * Bits [7:1]   - Reserved (must be 0)
- *
- * Bits [31:8]  - SIZE_MB: CXL Memory Size in Megabytes (read-only)
- *                Total size of CXL memory in MB
- *                0 = No CXL memory configured
- *                Reset: 0 (depends on hostmem backend)
- */
-#define ACCEL_REG_CXLCFG    0x0048
-
-#define ACCEL_CXLCFG_ENABLE_SHIFT   0
-#define ACCEL_CXLCFG_SIZE_MB_SHIFT  8
-#define ACCEL_CXLCFG_SIZE_MB_MASK   0xFFFFFF
-
-/* ===== Interrupt Coalescing Configuration (INTCOAL) - Offset 0x0050 ===== */
+/* ===== Interrupt Coalescing Configuration (INTCOAL) - Offset 0x0048 ===== */
 /*
  * 32-bit read/write register for interrupt coalescing parameters.
  *
@@ -423,8 +394,6 @@
 #define ACCEL_CMD_LOOPBACK              0x01
 #define ACCEL_CMD_P2P_WRITE             0x02
 #define ACCEL_CMD_P2P_READ              0x03
-#define ACCEL_CMD_CXL_READ              0x10
-#define ACCEL_CMD_CXL_WRITE             0x11
 
 /* ===== Command Flags ===== */
 /*
@@ -494,12 +463,6 @@
 #define ACCEL_SC_PASID_NOT_ENABLED      0x42  /* PASID not enabled */
 #define ACCEL_SC_SVA_FAULT              0x43  /* Shared virtual address fault */
 
-/* Command Specific Status - CXL (0x50-0x5F) */
-#define ACCEL_SC_CXL_NOT_SUPPORTED      0x50  /* CXL not supported */
-#define ACCEL_SC_CXL_NOT_ENABLED        0x51  /* CXL memory not enabled */
-#define ACCEL_SC_CXL_ADDR_INVALID       0x52  /* Invalid CXL address */
-#define ACCEL_SC_CXL_ACCESS_ERROR       0x53  /* CXL memory access error */
-
 /* Status Code Type */
 #define ACCEL_SCT_GENERIC               0x0   /* Generic command status */
 #define ACCEL_SCT_SPECIFIC              0x1   /* Command specific status */
@@ -516,11 +479,10 @@
 #define ACCEL_FEAT_INTERRUPT_COALESCING 0x01  /* Interrupt coalescing settings */
 #define ACCEL_FEAT_NUM_QUEUES           0x07  /* Number of queues */
 #define ACCEL_FEAT_P2P_CONFIG           0x10  /* P2P configuration */
-#define ACCEL_FEAT_CXL_CONFIG           0x11  /* CXL configuration */
 
 /* ===== BAR Sizes and Offsets ===== */
 #define ACCEL_BAR0_SIZE     (64 * 1024)   /* 64KB - Controller registers */
-#define ACCEL_BAR2_SIZE     (256 * 1024)  /* 256KB - CXL component registers */
+#define ACCEL_BAR2_SIZE     (256 * 1024)  /* 256KB - P2P scratchpad RAM */
 #define ACCEL_BAR4_SIZE     (16 * 1024)   /* 16KB - MSI-X table/PBA */
 
 /* MSI-X table/PBA offsets within BAR4 */

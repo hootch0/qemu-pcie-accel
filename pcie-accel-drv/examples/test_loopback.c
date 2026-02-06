@@ -554,7 +554,6 @@ int main(int argc, char *argv[])
            id.version & 0xFF);
     printf("  Max queues:   %u\n", id.max_queues);
     printf("  Max q size:   %u\n", id.max_queue_size);
-    printf("  CXL memory:   %lu MB\n", (unsigned long)(id.cxl_size / (1024 * 1024)));
     printf("  io_uring fd:  %d\n", accel_get_uring_fd(dev));
     printf("\n");
 

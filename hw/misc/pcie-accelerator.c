@@ -11,7 +11,6 @@
  * - PCIe peer-to-peer (P2P) DMA with N:N concurrent transfers
  * - PASID/SVA support for shared virtual addressing
  * - MSI-X interrupts with coalescing
- * - CXL Type 1 memory expander integration
  * - Production-level error handling and logging
  */
 
@@ -425,7 +424,7 @@ void accel_post_cqes(void *opaque)
 static uint16_t accel_validate_cmd(PCIeAccel *n, AccelCmd *cmd)
 {
     /* Validate opcode range */
-    if (cmd->opcode > ACCEL_CMD_CXL_WRITE) {
+    if (cmd->opcode > ACCEL_CMD_P2P_READ) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "pcie-accel: Invalid opcode 0x%x\n", cmd->opcode);
         return ACCEL_SC_INVALID_OPCODE;
@@ -436,8 +435,6 @@ static uint16_t accel_validate_cmd(PCIeAccel *n, AccelCmd *cmd)
     case ACCEL_CMD_LOOPBACK:
     case ACCEL_CMD_P2P_WRITE:
     case ACCEL_CMD_P2P_READ:
-    case ACCEL_CMD_CXL_READ:
-    case ACCEL_CMD_CXL_WRITE:
         if (cmd->prp1 == 0) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "pcie-accel: NULL PRP1 for opcode 0x%x\n",
@@ -481,14 +478,6 @@ static uint16_t accel_validate_cmd(PCIeAccel *n, AccelCmd *cmd)
                           "pcie-accel: Invalid PASID %u (width=%u)\n",
                           pasid, n->sva.pasid_width);
             return ACCEL_SC_PASID_INVALID;
-        }
-    }
-
-    /* Validate CXL parameters */
-    if (cmd->opcode == ACCEL_CMD_CXL_READ ||
-        cmd->opcode == ACCEL_CMD_CXL_WRITE) {
-        if (!n->cxl.enabled) {
-            return ACCEL_SC_CXL_NOT_ENABLED;
         }
     }
 
@@ -597,12 +586,6 @@ uint16_t accel_io_cmd(PCIeAccel *n, AccelRequest *req)
     case ACCEL_CMD_P2P_READ:
         return accel_cmd_p2p_read(n, req);
 
-    case ACCEL_CMD_CXL_READ:
-        return accel_cmd_cxl_read(n, req);
-
-    case ACCEL_CMD_CXL_WRITE:
-        return accel_cmd_cxl_write(n, req);
-
     default:
         trace_pcie_accel_err_invalid_cmd(req->sq->sqid, cmd->opcode);
         return ACCEL_SC_INVALID_OPCODE;
@@ -635,7 +618,6 @@ uint16_t accel_cmd_identify(PCIeAccel *n, AccelRequest *req)
      * Offset 12-15: P2P max peers
      * Offset 16-19: P2P max xfers
      * Offset 20-23: PASID width (0 if disabled)
-     * Offset 24-31: CXL memory size
      */
 
     /* Version */
@@ -651,9 +633,6 @@ uint16_t accel_cmd_identify(PCIeAccel *n, AccelRequest *req)
 
     /* PASID/SVA capabilities */
     *(uint32_t *)(buf + 20) = cpu_to_le32(n->sva.enabled ? n->sva.pasid_width : 0);
-
-    /* CXL capabilities */
-    *(uint64_t *)(buf + 24) = cpu_to_le64(n->cxl.size);
 
     /* Write to host memory */
     status = accel_dma_write_safe(n, prp1, buf, sizeof(buf));
@@ -1148,10 +1127,6 @@ static uint64_t accel_mmio_read(void *opaque, hwaddr addr, unsigned size)
         val = n->bar.p2pcfg;
         break;
 
-    case ACCEL_REG_CXLCFG:
-        val = n->bar.cxlcfg;
-        break;
-
     case ACCEL_REG_INTCOAL:
         val = n->bar.intcoal;
         break;
@@ -1265,19 +1240,6 @@ static void accel_mmio_write(void *opaque, hwaddr addr, uint64_t data,
             accel_init_cq(&n->admin_cq, n, data, 0, 0, acqs, 1);
             /* Link admin CQ to cq[0] for doorbell dispatch */
             n->cq[0] = &n->admin_cq;
-        }
-        break;
-
-    case ACCEL_REG_CXLCFG:
-        /* Only ENABLE bit is writable */
-        if (data & (1 << ACCEL_CXLCFG_ENABLE_SHIFT)) {
-            if (n->cxl.hostmem) {
-                n->bar.cxlcfg |= (1 << ACCEL_CXLCFG_ENABLE_SHIFT);
-                n->cxl.enabled = true;
-            }
-        } else {
-            n->bar.cxlcfg &= ~(1 << ACCEL_CXLCFG_ENABLE_SHIFT);
-            n->cxl.enabled = false;
         }
         break;
 
@@ -1589,18 +1551,6 @@ void pcie_accel_realize(PCIDevice *pci_dev, Error **errp)
         n->sva.pasid_as = g_new0(AddressSpace *, max_pasid);
     }
 
-    /* Initialize CXL if enabled */
-    if (n->cxl.hostmem) {
-        pcie_accel_cxl_init(n, errp);
-        if (*errp) {
-            return;
-        }
-
-        /* Update CAP and CXLCFG registers */
-        n->bar.cap |= (1ULL << ACCEL_CAP_CXLMEM_SHIFT);
-        n->bar.cxlcfg = (n->cxl.size / MiB) << ACCEL_CXLCFG_SIZE_MB_SHIFT;
-    }
-
     /* Reset to initialize registers */
     pcie_accel_reset(DEVICE(n));
 }
@@ -1641,11 +1591,6 @@ void pcie_accel_exit(PCIDevice *pci_dev)
         g_free(n->sva.pasid_as);
     }
 
-    /* Cleanup CXL */
-    if (n->cxl.enabled) {
-        pcie_accel_cxl_exit(n);
-    }
-
     /* Cleanup MSI-X */
     msix_uninit(pci_dev, &n->msix_bar, &n->msix_bar);
 }
@@ -1661,8 +1606,6 @@ static const Property pcie_accel_props[] = {
     DEFINE_PROP_UINT8("p2p_max_xfers", PCIeAccel, p2p.max_xfers_per_peer, 64),
     DEFINE_PROP_BOOL("sva_enable", PCIeAccel, sva.enabled, false),
     DEFINE_PROP_UINT8("pasid_width", PCIeAccel, sva.pasid_width, 16),
-    DEFINE_PROP_LINK("cxl-hostmem", PCIeAccel, cxl.hostmem,
-                     TYPE_MEMORY_BACKEND, HostMemoryBackend *),
 };
 
 static void pcie_accel_class_init(ObjectClass *oc, const void *data)

@@ -9,8 +9,7 @@
  * This header defines the core data structures for the PCIe Accelerator device.
  * The device implements NVMe-style submission/completion queues with doorbell
  * registers, supports P2P DMA between multiple devices, PASID/SVA for shared
- * virtual addressing, MSI-X interrupts with coalescing, and CXL Type 1 memory
- * expander integration.
+ * virtual addressing, and MSI-X interrupts with coalescing.
  */
 
 #ifndef HW_PCIE_ACCELERATOR_H
@@ -77,14 +76,6 @@ typedef struct QEMU_PACKED AccelCmd {
             uint32_t flags;        /* Loopback-specific flags */
             uint32_t rsvd[3];
         } loopback;
-
-        /* CXL memory access parameters */
-        struct {
-            uint32_t length;       /* Access length in bytes */
-            uint32_t rsvd;
-            uint64_t dpa;          /* Device Physical Address in CXL memory */
-            uint64_t rsvd2;
-        } cxl;
 
         /* Admin command parameters */
         struct {
@@ -262,7 +253,6 @@ struct PCIeAccel {
     MemoryRegion bar0;                  /* Main register BAR (64KB) */
     MemoryRegion bar2;                  /* P2P scratchpad RAM (256KB) */
     MemoryRegion msix_bar;              /* MSI-X table/PBA BAR4 (16KB) */
-    MemoryRegion bar5_cxl;              /* CXL component registers BAR5 (64KB) */
 
     /* Device Registers (in-memory representation of BAR0) */
     struct {
@@ -276,7 +266,6 @@ struct PCIeAccel {
         uint64_t asq;                   /* Admin SQ base address */
         uint64_t acq;                   /* Admin CQ base address */
         uint32_t p2pcfg;                /* P2P configuration */
-        uint32_t cxlcfg;                /* CXL configuration */
         uint32_t intcoal;               /* Interrupt coalescing */
         uint32_t devstat;               /* Device status */
     } bar;
@@ -315,18 +304,6 @@ struct PCIeAccel {
         uint8_t pasid_width;            /* Number of PASID bits (8-20) */
         AddressSpace **pasid_as;        /* Per-PASID address spaces */
     } sva;
-
-    /* CXL Memory Expander (Type 1) */
-    struct {
-        bool enabled;                   /* CXL memory expander enabled */
-        HostMemoryBackend *hostmem;     /* Memory backend */
-        AddressSpace as;                /* CXL memory address space */
-        uint64_t size;                  /* Memory size in bytes */
-        MemoryRegion mr;                /* Memory region */
-
-        /* CXL component registers */
-        MemoryRegion comp_regs;         /* Component register block */
-    } cxl;
 
     /* Device Configuration Properties */
     uint32_t page_size;                 /* Host page size (from CC.MPS) */
@@ -469,12 +446,6 @@ int accel_register_p2p_peer(PCIeAccel *n, uint16_t bdf, PCIDevice *pdev);
 void accel_unregister_p2p_peer(PCIeAccel *n, uint16_t bdf);
 size_t accel_p2p_get_stats(PCIeAccel *n, void *buf, size_t size);
 void accel_p2p_dump_state(PCIeAccel *n);
-
-/* CXL functions (implemented in pcie-accel-cxl-mem.c) */
-void pcie_accel_cxl_init(PCIeAccel *n, Error **errp);
-void pcie_accel_cxl_exit(PCIeAccel *n);
-uint16_t accel_cmd_cxl_read(PCIeAccel *n, AccelRequest *req);
-uint16_t accel_cmd_cxl_write(PCIeAccel *n, AccelRequest *req);
 
 /* Utility functions */
 uint16_t accel_dma_read_safe(PCIeAccel *n, uint64_t addr, void *buf, size_t len);

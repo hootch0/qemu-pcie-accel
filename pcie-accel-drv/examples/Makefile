@@ -33,7 +33,7 @@ BINDIR := $(PREFIX)/bin
 LIBDIR := $(realpath ../libaccel)
 
 # Source files
-EXAMPLES := test_loopback test_p2p test_cxl
+EXAMPLES := test_loopback test_p2p
 
 # Default target
 all: $(EXAMPLES)
@@ -43,9 +43,6 @@ test_loopback: test_loopback.c ../libaccel/libaccel.a
 	$(CC) $(CFLAGS) -I../libaccel -o $@ $< ../libaccel/libaccel.a $(LIBS)
 
 test_p2p: test_p2p.c ../libaccel/libaccel.a
-	$(CC) $(CFLAGS) -I../libaccel -o $@ $< ../libaccel/libaccel.a $(LIBS)
-
-test_cxl: test_cxl.c ../libaccel/libaccel.a
 	$(CC) $(CFLAGS) -I../libaccel -o $@ $< ../libaccel/libaccel.a $(LIBS)
 
 # Ensure library is built
@@ -98,16 +95,6 @@ run-p2p-bidir: test_p2p
 	@echo "Note: Requires /dev/accel0, /dev/accel1 and root privileges"
 	sudo LD_LIBRARY_PATH=$(LIBDIR) ./test_p2p -b
 
-run-cxl: test_cxl
-	@echo "Running CXL memory test..."
-	@echo "Note: Requires /dev/accel0 with CXL memory and root privileges"
-	sudo LD_LIBRARY_PATH=$(LIBDIR) ./test_cxl
-
-run-cxl-all: test_cxl
-	@echo "Running CXL memory test (all tests)..."
-	@echo "Note: Requires /dev/accel0 with CXL memory and root privileges"
-	sudo LD_LIBRARY_PATH=$(LIBDIR) ./test_cxl -a
-
 # Help
 help:
 	@echo "PCIe Accelerator Examples (io_uring)"
@@ -128,14 +115,9 @@ help:
 	@echo "  run-p2p-async        - Run P2P test (concurrent async)"
 	@echo "  run-p2p-bidir        - Run P2P test (bidirectional)"
 	@echo ""
-	@echo "CXL Tests:"
-	@echo "  run-cxl              - Run CXL memory test (basic)"
-	@echo "  run-cxl-all          - Run CXL memory test (all tests)"
-	@echo ""
 	@echo "Examples:"
 	@echo "  test_loopback - Basic loopback DMA test with io_uring"
 	@echo "  test_p2p      - Peer-to-peer DMA test with io_uring"
-	@echo "  test_cxl      - CXL memory read/write test"
 	@echo ""
 	@echo "Usage:"
 	@echo "  ./test_loopback -h       # Show help"
@@ -144,8 +126,6 @@ help:
 	@echo "  ./test_p2p -h            # Show help"
 	@echo "  ./test_p2p -a            # Concurrent async mode"
 	@echo "  ./test_p2p -b            # Bidirectional async mode"
-	@echo "  ./test_cxl -h            # Show help"
-	@echo "  ./test_cxl -a            # Run all tests"
 	@echo ""
 	@echo "Dependencies:"
 	@echo "  liburing-dev (Debian/Ubuntu) or liburing-devel (Fedora/RHEL)"
@@ -153,4 +133,3 @@ help:
 .PHONY: all clean install uninstall help
 .PHONY: run-loopback run-loopback-async run-loopback-concurrent
 .PHONY: run-p2p run-p2p-async run-p2p-bidir
-.PHONY: run-cxl run-cxl-all

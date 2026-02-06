@@ -693,8 +693,7 @@ int accel_submit_async_cmd(struct accel_queue *queue, struct accel_cmd *cmd,
 	req->data_dma = data_dma;
 	req->data_len = data_len;
 	req->user_buf = user_buf;
-	req->is_read = (opcode == ACCEL_CMD_P2P_READ ||
-			opcode == ACCEL_CMD_CXL_READ);
+	req->is_read = (opcode == ACCEL_CMD_P2P_READ);
 	req->mm = NULL;
 	if (req->is_read && req->user_buf) {
 		req->mm = current->mm;

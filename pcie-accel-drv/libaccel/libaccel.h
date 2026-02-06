@@ -85,8 +85,6 @@ extern "C" {
 #define ACCEL_CMD_LOOPBACK          0x01
 #define ACCEL_CMD_P2P_WRITE         0x02
 #define ACCEL_CMD_P2P_READ          0x03
-#define ACCEL_CMD_CXL_READ          0x10
-#define ACCEL_CMD_CXL_WRITE         0x11
 
 /*
  * ===== Status Codes =====
@@ -96,7 +94,6 @@ extern "C" {
 #define ACCEL_SC_INVALID_FIELD      0x02
 #define ACCEL_SC_DMA_ERROR          0x30
 #define ACCEL_SC_P2P_PEER_NOT_FOUND 0x21
-#define ACCEL_SC_CXL_NOT_ENABLED    0x51
 
 /*
  * ===== io_uring Command Operations =====
@@ -141,12 +138,6 @@ struct accel_cmd {
             uint32_t flags;
             uint32_t rsvd[3];
         } loopback;
-        struct {
-            uint32_t length;
-            uint32_t rsvd;
-            uint64_t dpa;         /* Device Physical Address */
-            uint64_t rsvd2;
-        } cxl;
         struct {
             uint32_t cdw10;
             uint32_t cdw11;
@@ -195,7 +186,6 @@ struct accel_identify {
     uint32_t p2p_max_peers;   /* Maximum P2P peers */
     uint32_t p2p_max_xfers;   /* Maximum concurrent P2P transfers */
     uint32_t pasid_width;     /* PASID width (0 if disabled) */
-    uint64_t cxl_size;        /* CXL memory size in bytes */
 };
 
 /**
@@ -374,32 +364,6 @@ int accel_p2p_write(struct accel_device *dev, uint16_t qid,
 int accel_p2p_read(struct accel_device *dev, uint16_t qid,
                    uint16_t peer_bdf, void *local_data,
                    uint64_t peer_addr, uint32_t length);
-
-/**
- * accel_cxl_read - Read from CXL memory (synchronous)
- * @dev: Device handle
- * @qid: Queue ID
- * @local_data: Local data buffer (destination)
- * @cxl_addr: CXL device physical address (source)
- * @length: Transfer length in bytes
- *
- * Returns: ACCEL_SUCCESS or error code
- */
-int accel_cxl_read(struct accel_device *dev, uint16_t qid,
-                   void *local_data, uint64_t cxl_addr, uint32_t length);
-
-/**
- * accel_cxl_write - Write to CXL memory (synchronous)
- * @dev: Device handle
- * @qid: Queue ID
- * @local_data: Local data buffer (source)
- * @cxl_addr: CXL device physical address (destination)
- * @length: Transfer length in bytes
- *
- * Returns: ACCEL_SUCCESS or error code
- */
-int accel_cxl_write(struct accel_device *dev, uint16_t qid,
-                    const void *local_data, uint64_t cxl_addr, uint32_t length);
 
 /*
  * ----- Asynchronous Command Submission -----

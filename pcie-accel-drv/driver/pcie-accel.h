@@ -47,7 +47,6 @@
 #define ACCEL_REG_ASQ		0x0028
 #define ACCEL_REG_ACQ		0x0030
 #define ACCEL_REG_P2PCFG	0x0040
-#define ACCEL_REG_CXLCFG	0x0048
 #define ACCEL_REG_INTCOAL	0x0050
 #define ACCEL_REG_DEVSTAT	0x0058
 #define ACCEL_REG_DOORBELL	0x1000
@@ -69,8 +68,6 @@
 #define ACCEL_CMD_LOOPBACK		0x01
 #define ACCEL_CMD_P2P_WRITE		0x02
 #define ACCEL_CMD_P2P_READ		0x03
-#define ACCEL_CMD_CXL_READ		0x10
-#define ACCEL_CMD_CXL_WRITE		0x11
 
 /* Status codes */
 #define ACCEL_SC_SUCCESS		0x00
@@ -119,12 +116,6 @@ struct accel_cmd {
 			__le32	flags;
 			__le32	rsvd[3];
 		} loopback;
-		struct {
-			__le32	length;
-			__le32	rsvd;
-			__le64	dpa;
-			__le64	rsvd2;
-		} cxl;
 		struct {
 			__le32	cdw10;
 			__le32	cdw11;
@@ -296,8 +287,6 @@ struct accel_p2p_peer {
 struct accel_dev {
 	struct pci_dev *pdev;
 	void __iomem *bar0;			/* BAR0: Controller registers */
-	void __iomem *bar5_cxl;			/* BAR5: CXL component registers (optional) */
-	bool cxl_enabled;			/* True if CXL memory is attached */
 
 	struct cdev cdev;
 	dev_t devt;

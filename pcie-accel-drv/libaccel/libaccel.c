@@ -397,7 +397,6 @@ int accel_identify(struct accel_device *dev, struct accel_identify *id)
     id->p2p_max_peers = 32;
     id->p2p_max_xfers = 256;
     id->pasid_width = 20;
-    id->cxl_size = 256 * 1024 * 1024;  /* 256 MB */
 
     return ACCEL_SUCCESS;
 }
@@ -533,44 +532,6 @@ int accel_p2p_read(struct accel_device *dev, uint16_t qid,
     cmd.dw.p2p.length = length;
     cmd.dw.p2p.peer_addr = peer_addr;
     cmd.dw.p2p.peer_bdf = peer_bdf;
-
-    return accel_submit_cmd(dev, qid, &cmd, NULL, 5000);
-}
-
-/**
- * accel_cxl_read - Synchronous CXL read
- */
-int accel_cxl_read(struct accel_device *dev, uint16_t qid,
-                   void *local_data, uint64_t cxl_addr, uint32_t length)
-{
-    struct accel_cmd cmd = {0};
-
-    if (!dev || !local_data || length == 0)
-        return ACCEL_ERR_INVAL;
-
-    cmd.opcode = ACCEL_CMD_CXL_READ;
-    cmd.prp1 = (uint64_t)(uintptr_t)local_data;
-    cmd.dw.cxl.length = length;
-    cmd.dw.cxl.dpa = cxl_addr;
-
-    return accel_submit_cmd(dev, qid, &cmd, NULL, 5000);
-}
-
-/**
- * accel_cxl_write - Synchronous CXL write
- */
-int accel_cxl_write(struct accel_device *dev, uint16_t qid,
-                    const void *local_data, uint64_t cxl_addr, uint32_t length)
-{
-    struct accel_cmd cmd = {0};
-
-    if (!dev || !local_data || length == 0)
-        return ACCEL_ERR_INVAL;
-
-    cmd.opcode = ACCEL_CMD_CXL_WRITE;
-    cmd.prp1 = (uint64_t)(uintptr_t)local_data;
-    cmd.dw.cxl.length = length;
-    cmd.dw.cxl.dpa = cxl_addr;
 
     return accel_submit_cmd(dev, qid, &cmd, NULL, 5000);
 }
