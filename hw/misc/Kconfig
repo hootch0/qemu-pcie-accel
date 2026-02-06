@@ -240,4 +240,9 @@ config IOSB
 config XLNX_VERSAL_TRNG
     bool
 
+config PCIE_ACCEL
+    bool
+    default y if PCI_DEVICES
+    depends on PCI && MSI_NONBROKEN
+
 source macio/Kconfig

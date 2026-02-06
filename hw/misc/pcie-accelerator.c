@@ -1143,6 +1143,9 @@ static void accel_mmio_write(void *opaque, hwaddr addr, uint64_t data,
             n->bar.asq = data;
             /* Initialize admin SQ */
             uint16_t asqs = (n->bar.aqa & ACCEL_AQA_ASQS_MASK) + 1;
+            qemu_log_mask(LOG_UNIMP,
+                          "pcie-accel: ASQ=0x%" PRIx64 " size=%u (AQA=0x%x)\n",
+                          data, asqs, n->bar.aqa);
             accel_init_sq(&n->admin_sq, n, data, 0, 0, asqs);
             /* Link admin SQ to sq[0] for doorbell dispatch */
             n->sq[0] = &n->admin_sq;
@@ -1157,6 +1160,9 @@ static void accel_mmio_write(void *opaque, hwaddr addr, uint64_t data,
             n->bar.acq = data;
             /* Initialize admin CQ */
             uint16_t acqs = ((n->bar.aqa >> 16) & ACCEL_AQA_ACQS_MASK) + 1;
+            qemu_log_mask(LOG_UNIMP,
+                          "pcie-accel: ACQ=0x%" PRIx64 " size=%u\n",
+                          data, acqs);
             accel_init_cq(&n->admin_cq, n, data, 0, 0, acqs, 1);
             /* Link admin CQ to cq[0] for doorbell dispatch */
             n->cq[0] = &n->admin_cq;
