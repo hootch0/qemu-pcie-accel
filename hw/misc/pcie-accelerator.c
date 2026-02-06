@@ -943,21 +943,19 @@ void accel_process_sq(void *opaque)
         req->bounce_buf = NULL;
         req->bounce_len = 0;
 
-        /* Validate command */
-        status = accel_validate_cmd(n, &cmd);
-        if (status != ACCEL_SC_SUCCESS) {
-            req->status = status;
-            accel_enqueue_req_completion(cq, req);
-            n->stats.cmd_errors++;
-            continue;
-        }
-
         /* Dispatch command */
         if (sq->sqid == 0) {
-            /* Admin queue */
+            /* Admin queue - admin commands have their own validation */
             status = accel_admin_cmd(n, req);
         } else {
-            /* I/O queue */
+            /* I/O queue - validate before dispatch */
+            status = accel_validate_cmd(n, &cmd);
+            if (status != ACCEL_SC_SUCCESS) {
+                req->status = status;
+                accel_enqueue_req_completion(cq, req);
+                n->stats.cmd_errors++;
+                continue;
+            }
             qemu_log_mask(LOG_UNIMP,
                           "pcie-accel: I/O cmd dispatch: sqid=%u opcode=0x%x cid=%u\n",
                           sq->sqid, cmd.opcode, le16_to_cpu(cmd.cid));
