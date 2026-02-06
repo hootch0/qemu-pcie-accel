@@ -287,10 +287,12 @@ static int __maybe_unused accel_remove_p2p_peer(struct accel_dev *dev, u16 peer_
  * @dev: Device structure
  *
  * Called during device removal to clean up all registered peers.
+ * Sends teardown commands to device before freeing local resources.
  */
 void accel_cleanup_p2p_peers(struct accel_dev *dev)
 {
 	struct accel_p2p_peer *peer, *tmp;
+	struct accel_cmd cmd;
 	unsigned long flags;
 	LIST_HEAD(remove_list);
 
@@ -301,12 +303,27 @@ void accel_cleanup_p2p_peers(struct accel_dev *dev)
 
 	/* Remove each peer */
 	list_for_each_entry_safe(peer, tmp, &remove_list, list) {
+		/*
+		 * Send P2P teardown admin command.
+		 * CDW10[15:0] = peer BDF
+		 * CDW10[16]   = operation (1=unregister)
+		 */
+		memset(&cmd, 0, sizeof(cmd));
+		cmd.opcode = ACCEL_ADM_CMD_P2P_SETUP;
+		cmd.dw.admin.cdw10 = cpu_to_le32(peer->bdf | (1 << 16));
+
+		/* Best effort - don't fail removal if command fails */
+		accel_submit_admin_cmd(dev, &cmd, NULL);
+
 		list_del(&peer->list);
 
 		if (peer->mem)
 			pci_iounmap(peer->pdev, peer->mem);
 		pci_dev_put(peer->pdev);
 		kfree(peer);
+
+		dev_dbg(&dev->pdev->dev, "P2P peer 0x%04x unregistered\n",
+			peer->bdf);
 	}
 }
 
