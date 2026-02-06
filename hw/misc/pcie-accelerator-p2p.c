@@ -295,6 +295,12 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
 
     trace_pcie_accel_p2p_xfer(peer_bdf, peer_addr, total_len);
 
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "pcie-accel: P2P %s: peer=0x%x host_addr=0x%" PRIx64
+                  " peer_addr=0x%" PRIx64 " len=%u\n",
+                  is_write ? "WRITE" : "READ", peer_bdf, host_addr,
+                  peer_addr, total_len);
+
     /*
      * Transfer loop: Process data in chunks
      * For writes: Read from host -> Write to peer BAR2

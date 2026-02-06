@@ -363,6 +363,12 @@ static int accel_process_cq_threaded(struct accel_queue *queue)
 				 */
 				int err = (status == 0) ? 0 : -EIO;
 
+				if (status != 0) {
+					dev_dbg(&dev->pdev->dev,
+						"Command cid=%u opcode=%u failed: status=0x%x\n",
+						cid, req->cmd.opcode, status);
+				}
+
 				/*
 				 * For read operations, copy data from DMA
 				 * buffer back to user space before completing.
