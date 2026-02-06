@@ -224,6 +224,10 @@ struct accel_request {
 	dma_addr_t data_dma;			/* DMA address */
 	size_t data_len;			/* Buffer length */
 
+	/* User buffer for read operations (copy back on completion) */
+	void __user *user_buf;			/* Original user address */
+	bool is_read;				/* True if read operation */
+
 	/* For request tracking */
 	struct hlist_node hash_node;		/* Hash table linkage */
 	struct list_head list;			/* Free/pending list */
@@ -368,7 +372,8 @@ int accel_submit_admin_cmd(struct accel_dev *dev, struct accel_cmd *cmd,
 			   struct accel_cqe *cqe);
 int accel_submit_async_cmd(struct accel_queue *queue, struct accel_cmd *cmd,
 			   struct io_uring_cmd *ioucmd, void *data_buf,
-			   dma_addr_t data_dma, size_t data_len);
+			   dma_addr_t data_dma, size_t data_len,
+			   void __user *user_buf);
 void accel_complete_request(struct accel_request *req);
 int accel_ring_sq_doorbell(struct accel_queue *queue);
 int accel_ring_cq_doorbell(struct accel_queue *queue);

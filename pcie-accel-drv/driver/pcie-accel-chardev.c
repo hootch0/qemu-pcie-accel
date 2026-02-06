@@ -104,6 +104,7 @@ static int accel_uring_cmd_submit(struct io_uring_cmd *ioucmd,
 	struct accel_cmd cmd;
 	dma_addr_t data_dma = 0;
 	void *data_buf = NULL;
+	void __user *user_buf = NULL;
 	size_t data_len = 0;
 	u16 qid = ucmd->qid;
 	int ret;
@@ -143,6 +144,8 @@ static int accel_uring_cmd_submit(struct io_uring_cmd *ioucmd,
 
 	/* Allocate DMA buffer if needed (limit to 16MB) */
 	if (data_len > 0 && data_len <= (16 * 1024 * 1024)) {
+		u64 user_addr = le64_to_cpu(cmd.prp1);
+
 		data_buf = dma_alloc_coherent(&dev->pdev->dev, data_len,
 					      &data_dma, GFP_ATOMIC);
 		if (!data_buf)
@@ -150,12 +153,11 @@ static int accel_uring_cmd_submit(struct io_uring_cmd *ioucmd,
 
 		/*
 		 * For write operations, copy data from user-provided address.
-		 * The user address is stored in prp1.
+		 * For read operations, save user address for copy back on completion.
 		 */
 		if (cmd.opcode == ACCEL_CMD_P2P_WRITE ||
 		    cmd.opcode == ACCEL_CMD_CXL_WRITE ||
 		    cmd.opcode == ACCEL_CMD_LOOPBACK) {
-			u64 user_addr = le64_to_cpu(cmd.prp1);
 			void __user *uptr = (void __user *)user_addr;
 
 			/* Validate user address before copying */
@@ -170,6 +172,15 @@ static int accel_uring_cmd_submit(struct io_uring_cmd *ioucmd,
 						  data_buf, data_dma);
 				return -EFAULT;
 			}
+		} else if (cmd.opcode == ACCEL_CMD_P2P_READ ||
+			   cmd.opcode == ACCEL_CMD_CXL_READ) {
+			/* Save user buffer for copy back on completion */
+			if (!user_addr || !access_ok((void __user *)user_addr, data_len)) {
+				dma_free_coherent(&dev->pdev->dev, data_len,
+						  data_buf, data_dma);
+				return -EFAULT;
+			}
+			user_buf = (void __user *)user_addr;
 		}
 
 		/* Replace user address with DMA address */
@@ -180,9 +191,10 @@ static int accel_uring_cmd_submit(struct io_uring_cmd *ioucmd,
 	 * Submit command for async completion.
 	 * accel_submit_async_cmd() will track the request and deliver
 	 * completion via io_uring_cmd_done() when the device completes.
+	 * For read operations, user_buf is saved for copy back on completion.
 	 */
 	ret = accel_submit_async_cmd(queue, &cmd, ioucmd, data_buf,
-				     data_dma, data_len);
+				     data_dma, data_len, user_buf);
 	if (ret) {
 		if (data_buf)
 			dma_free_coherent(&dev->pdev->dev, data_len,

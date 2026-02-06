@@ -28,6 +28,7 @@
 #include <linux/version.h>
 #include <linux/io_uring.h>
 #include <linux/io_uring/cmd.h>
+#include <linux/uaccess.h>
 
 #include "pcie-accel.h"
 
@@ -361,6 +362,19 @@ static int accel_process_cq_threaded(struct accel_queue *queue)
 				 * Status 0 = success, others are errors.
 				 */
 				int err = (status == 0) ? 0 : -EIO;
+
+				/*
+				 * For read operations, copy data from DMA
+				 * buffer back to user space before completing.
+				 */
+				if (err == 0 && req->is_read && req->user_buf &&
+				    req->data_buf && req->data_len > 0) {
+					if (copy_to_user(req->user_buf,
+							 req->data_buf,
+							 req->data_len))
+						err = -EFAULT;
+				}
+
 				io_uring_cmd_done(req->ioucmd, err, result,
 						  IO_URING_F_UNLOCKED);
 				atomic64_inc(&dev->uring_completions);
@@ -490,6 +504,7 @@ static int accel_submit_cmd(struct accel_queue *queue, struct accel_cmd *cmd)
  * @data_buf: Optional DMA buffer for data transfer
  * @data_dma: DMA address of data buffer
  * @data_len: Length of data buffer
+ * @user_buf: User buffer address for read operations (copy back on completion)
  *
  * Submits a command and tracks it for async completion via io_uring.
  * The completion will be delivered through io_uring_cmd_done().
@@ -498,13 +513,15 @@ static int accel_submit_cmd(struct accel_queue *queue, struct accel_cmd *cmd)
  */
 int accel_submit_async_cmd(struct accel_queue *queue, struct accel_cmd *cmd,
 			   struct io_uring_cmd *ioucmd, void *data_buf,
-			   dma_addr_t data_dma, size_t data_len)
+			   dma_addr_t data_dma, size_t data_len,
+			   void __user *user_buf)
 {
 	struct accel_dev *dev = queue->dev;
 	struct accel_request *req;
 	unsigned long flags;
 	u16 cid;
 	int ret;
+	u8 opcode = cmd->opcode;
 
 	/* Allocate request tracking structure */
 	req = accel_alloc_request(queue);
@@ -521,6 +538,9 @@ int accel_submit_async_cmd(struct accel_queue *queue, struct accel_cmd *cmd,
 	req->data_buf = data_buf;
 	req->data_dma = data_dma;
 	req->data_len = data_len;
+	req->user_buf = user_buf;
+	req->is_read = (opcode == ACCEL_CMD_P2P_READ ||
+			opcode == ACCEL_CMD_CXL_READ);
 	req->start_time = jiffies;
 	memcpy(&req->cmd, cmd, sizeof(*cmd));
 
