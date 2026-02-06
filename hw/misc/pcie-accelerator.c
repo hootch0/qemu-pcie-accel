@@ -1035,6 +1035,16 @@ static void accel_process_doorbell(PCIeAccel *n, hwaddr addr, uint32_t val)
         /* Check if CQ became empty */
         if (cq->tail == cq->head && cq->irq_enabled) {
             accel_irq_deassert(n, cq);
+        } else if (cq->tail != cq->head && cq->irq_enabled) {
+            /*
+             * There are still pending CQEs that the driver hasn't consumed.
+             * Fire an interrupt to ensure the driver processes them.
+             * This handles the case where multiple completions arrived
+             * before the driver could consume the first one - subsequent
+             * completions don't fire interrupts (pending_before=true in
+             * accel_post_cqes), so we need to re-assert here.
+             */
+            accel_irq_assert(n, cq);
         }
 
         /* If CQ was full, schedule completion posting */
