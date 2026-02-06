@@ -30,6 +30,8 @@
 #include <linux/io_uring/cmd.h>
 #include <linux/uaccess.h>
 #include <linux/workqueue.h>
+#include <linux/kthread.h>
+#include <linux/sched/mm.h>
 
 #include "pcie-accel.h"
 
@@ -69,13 +71,15 @@ static void accel_read_completion_work(struct work_struct *work)
 	struct accel_dev *dev = req->queue->dev;
 	int err = 0;
 
-	/* Copy data to user space - safe in workqueue context */
-	if (req->user_buf && req->data_buf && req->data_len > 0) {
+	/* Copy data to user space using the saved mm context */
+	if (req->user_buf && req->data_buf && req->data_len > 0 && req->mm) {
+		kthread_use_mm(req->mm);
 		if (copy_to_user(req->user_buf, req->data_buf, req->data_len)) {
 			dev_err(&dev->pdev->dev,
 				"copy_to_user failed in workqueue\n");
 			err = -EFAULT;
 		}
+		kthread_unuse_mm(req->mm);
 	}
 
 	/* Complete the io_uring command */
@@ -247,6 +251,12 @@ void accel_free_request(struct accel_request *req)
 	if (req->data_buf && req->data_len > 0) {
 		dma_free_coherent(&dev->pdev->dev, req->data_len,
 				  req->data_buf, req->data_dma);
+	}
+
+	/* Release mm reference if held */
+	if (req->mm) {
+		mmput(req->mm);
+		req->mm = NULL;
 	}
 
 	/* Cancel timeout timer if active */
@@ -620,6 +630,11 @@ int accel_submit_async_cmd(struct accel_queue *queue, struct accel_cmd *cmd,
 	req->user_buf = user_buf;
 	req->is_read = (opcode == ACCEL_CMD_P2P_READ ||
 			opcode == ACCEL_CMD_CXL_READ);
+	req->mm = NULL;
+	if (req->is_read && req->user_buf) {
+		req->mm = current->mm;
+		mmget(req->mm);
+	}
 	req->start_time = jiffies;
 	memcpy(&req->cmd, cmd, sizeof(*cmd));
 
@@ -634,6 +649,8 @@ int accel_submit_async_cmd(struct accel_queue *queue, struct accel_cmd *cmd,
 	if (ret) {
 		spin_unlock_irqrestore(&queue->sq_lock, flags);
 		del_timer_sync(&req->timer);
+		if (req->mm)
+			mmput(req->mm);
 		kmem_cache_free(dev->req_cache, req);
 		return ret;
 	}

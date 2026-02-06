@@ -239,6 +239,7 @@ struct accel_request {
 	/* Deferred completion for read operations */
 	struct work_struct completion_work;	/* Work for copy_to_user */
 	s32 result;				/* Device result for deferred completion */
+	struct mm_struct *mm;			/* User's mm for kthread_use_mm */
 };
 
 /**
