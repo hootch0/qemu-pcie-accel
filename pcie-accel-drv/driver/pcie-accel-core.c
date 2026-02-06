@@ -703,6 +703,9 @@ static void accel_pci_remove(struct pci_dev *pdev)
 	/* Free device ID */
 	ida_simple_remove(&accel_ida, MINOR(dev->devt));
 
+	/* Clean up P2P peers while controller is still enabled */
+	accel_cleanup_p2p_peers(dev);
+
 	/* Disable controller - stops all command processing */
 	accel_disable_ctrl(dev);
 
@@ -714,9 +717,6 @@ static void accel_pci_remove(struct pci_dev *pdev)
 
 	/* Free admin queue */
 	accel_free_admin_queue(dev);
-
-	/* Clean up P2P peer resources */
-	accel_cleanup_p2p_peers(dev);
 
 	/* Destroy request cache */
 	accel_destroy_req_cache(dev);
