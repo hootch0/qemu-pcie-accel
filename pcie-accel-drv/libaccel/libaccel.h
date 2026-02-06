@@ -123,8 +123,8 @@ struct accel_cmd {
     uint8_t  flags;           /* Command flags */
     uint16_t cid;             /* Command identifier */
     uint32_t nsid;            /* Namespace/Peer ID */
-    uint64_t rsvd1[2];
-    uint64_t metadata;
+    uint64_t rsvd1;           /* Reserved (must match driver: 8 bytes) */
+    uint64_t metadata;        /* Metadata pointer */
     uint64_t prp1;            /* Data buffer pointer */
     uint64_t prp2;            /* Secondary pointer or PRP list */
     union {
