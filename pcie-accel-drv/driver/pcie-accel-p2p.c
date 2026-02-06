@@ -109,11 +109,11 @@ int accel_setup_p2p_peer(struct accel_dev *dev, u16 peer_bdf)
 	unsigned long flags;
 	int ret;
 
-	/* Check if already registered */
+	/* Check if already registered - idempotent, return success */
 	if (accel_find_p2p_peer(dev, peer_bdf)) {
-		dev_warn(&dev->pdev->dev, "P2P peer 0x%04x already registered\n",
-			 peer_bdf);
-		return -EEXIST;
+		dev_dbg(&dev->pdev->dev, "P2P peer 0x%04x already registered\n",
+			peer_bdf);
+		return 0;
 	}
 
 	/* Check peer count limit */
