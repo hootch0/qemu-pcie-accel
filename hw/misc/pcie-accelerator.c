@@ -250,6 +250,10 @@ void accel_irq_deassert(PCIeAccel *n, AccelCQueue *cq)
 {
     PCIDevice *pci = PCI_DEVICE(n);
 
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: irq_deassert called: cqid=%u head=%u tail=%u irq_en=%d\n",
+                  cq->cqid, cq->head, cq->tail, cq->irq_enabled);
+
     if (!cq->irq_enabled) {
         return;
     }
