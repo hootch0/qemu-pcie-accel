@@ -420,13 +420,20 @@ void pcie_accel_cxl_init(PCIeAccel *n, Error **errp)
     /* Initialize CXL memory address space */
     address_space_init(&n->cxl.as, mr, "pcie-accel-cxl-mem");
 
-    /* Initialize component registers (BAR2) */
-    memory_region_init_io(&n->bar2, OBJECT(n), &accel_cxl_comp_ops, n,
-                          "pcie-accel-cxl-comp", ACCEL_BAR2_SIZE);
-    pci_register_bar(pci, 2,
+    /*
+     * Initialize CXL component registers on BAR5.
+     * BAR layout:
+     *   BAR0: Controller registers
+     *   BAR2: P2P scratchpad RAM
+     *   BAR4: MSI-X (32-bit)
+     *   BAR5: CXL component registers (32-bit)
+     */
+    memory_region_init_io(&n->bar5_cxl, OBJECT(n), &accel_cxl_comp_ops, n,
+                          "pcie-accel-cxl-comp", 64 * KiB);
+    pci_register_bar(pci, 5,
                      PCI_BASE_ADDRESS_SPACE_MEMORY |
-                     PCI_BASE_ADDRESS_MEM_TYPE_64,
-                     &n->bar2);
+                     PCI_BASE_ADDRESS_MEM_TYPE_32,
+                     &n->bar5_cxl);
 
     /* Build CXL DVSECs */
     accel_cxl_build_dvsecs(n);

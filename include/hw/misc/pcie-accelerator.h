@@ -260,8 +260,9 @@ struct PCIeAccel {
 
     /* Memory Regions */
     MemoryRegion bar0;                  /* Main register BAR (64KB) */
-    MemoryRegion bar2;                  /* CXL component registers (256KB) */
-    MemoryRegion msix_bar;              /* MSI-X table/PBA (16KB) */
+    MemoryRegion bar2;                  /* P2P scratchpad RAM (256KB) */
+    MemoryRegion msix_bar;              /* MSI-X table/PBA BAR4 (16KB) */
+    MemoryRegion bar5_cxl;              /* CXL component registers BAR5 (64KB) */
 
     /* Device Registers (in-memory representation of BAR0) */
     struct {
