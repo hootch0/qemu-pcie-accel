@@ -235,6 +235,10 @@ struct accel_request {
 	/* Timing for timeout handling */
 	unsigned long start_time;		/* jiffies at submit */
 	struct timer_list timer;		/* Timeout timer */
+
+	/* Deferred completion for read operations */
+	struct work_struct completion_work;	/* Work for copy_to_user */
+	s32 result;				/* Device result for deferred completion */
 };
 
 /**
@@ -363,6 +367,8 @@ struct class *accel_get_class(void);
 unsigned int accel_get_req_pool_size(void);
 
 /* Queue management (pcie-accel-queue.c) */
+int accel_queue_init(void);
+void accel_queue_exit(void);
 int accel_create_queue(struct accel_dev *dev, u16 qid, u16 sq_size, u16 cq_size);
 int accel_delete_queue(struct accel_dev *dev, u16 qid);
 int accel_submit_sync_cmd(struct accel_dev *dev, u16 qid,

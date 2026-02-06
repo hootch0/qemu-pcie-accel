@@ -29,8 +29,12 @@
 #include <linux/io_uring.h>
 #include <linux/io_uring/cmd.h>
 #include <linux/uaccess.h>
+#include <linux/workqueue.h>
 
 #include "pcie-accel.h"
+
+/* Workqueue for deferred read completions (copy_to_user needs process context) */
+static struct workqueue_struct *accel_completion_wq;
 
 /*
  * Kernel 6.17+ compatibility:
@@ -50,6 +54,68 @@ extern unsigned int accel_get_req_pool_size(void);
 
 /* Global command ID counter - shared across all queues to avoid collision */
 static atomic_t global_cid_counter = ATOMIC_INIT(0);
+
+/**
+ * accel_read_completion_work - Workqueue handler for read completions
+ * @work: Work structure embedded in request
+ *
+ * Runs in process context to safely call copy_to_user for read operations.
+ * Threaded IRQ context cannot access user memory directly.
+ */
+static void accel_read_completion_work(struct work_struct *work)
+{
+	struct accel_request *req = container_of(work, struct accel_request,
+						 completion_work);
+	struct accel_dev *dev = req->queue->dev;
+	int err = 0;
+
+	/* Copy data to user space - safe in workqueue context */
+	if (req->user_buf && req->data_buf && req->data_len > 0) {
+		if (copy_to_user(req->user_buf, req->data_buf, req->data_len)) {
+			dev_err(&dev->pdev->dev,
+				"copy_to_user failed in workqueue\n");
+			err = -EFAULT;
+		}
+	}
+
+	/* Complete the io_uring command */
+	io_uring_cmd_done(req->ioucmd, err, req->result, IO_URING_F_UNLOCKED);
+	atomic64_inc(&dev->uring_completions);
+
+	/* Free the request */
+	accel_free_request(req);
+}
+
+/**
+ * accel_queue_init - Initialize queue subsystem
+ *
+ * Creates the completion workqueue. Called during module init.
+ *
+ * Returns: 0 on success, negative error on failure
+ */
+int accel_queue_init(void)
+{
+	accel_completion_wq = alloc_workqueue("pcie-accel-cpl",
+					      WQ_UNBOUND | WQ_HIGHPRI, 0);
+	if (!accel_completion_wq)
+		return -ENOMEM;
+
+	return 0;
+}
+
+/**
+ * accel_queue_exit - Cleanup queue subsystem
+ *
+ * Destroys the completion workqueue. Called during module exit.
+ */
+void accel_queue_exit(void)
+{
+	if (accel_completion_wq) {
+		flush_workqueue(accel_completion_wq);
+		destroy_workqueue(accel_completion_wq);
+		accel_completion_wq = NULL;
+	}
+}
 
 /*
  * ===== Doorbell Operations =====
@@ -370,15 +436,22 @@ static int accel_process_cq_threaded(struct accel_queue *queue)
 				}
 
 				/*
-				 * For read operations, copy data from DMA
-				 * buffer back to user space before completing.
+				 * For read operations, defer completion to
+				 * workqueue so copy_to_user runs in process
+				 * context. Threaded IRQ context cannot safely
+				 * access user memory.
 				 */
 				if (err == 0 && req->is_read && req->user_buf &&
 				    req->data_buf && req->data_len > 0) {
-					if (copy_to_user(req->user_buf,
-							 req->data_buf,
-							 req->data_len))
-						err = -EFAULT;
+					req->result = result;
+					INIT_WORK(&req->completion_work,
+						  accel_read_completion_work);
+					queue_work(accel_completion_wq,
+						   &req->completion_work);
+					/* Request freed by work handler */
+					spin_lock_irqsave(&queue->cq_lock,
+							  flags);
+					continue;
 				}
 
 				io_uring_cmd_done(req->ioucmd, err, result,

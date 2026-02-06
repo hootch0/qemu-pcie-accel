@@ -775,12 +775,19 @@ static int __init accel_init(void)
 	pr_info("PCIe Accelerator driver version %s (io_uring enabled)\n",
 		ACCEL_DRIVER_VERSION);
 
+	/* Initialize queue subsystem (workqueue for completions) */
+	ret = accel_queue_init();
+	if (ret) {
+		pr_err("Failed to initialize queue subsystem: %d\n", ret);
+		return ret;
+	}
+
 	/* Allocate character device major number range */
 	ret = alloc_chrdev_region(&accel_devt, 0, ACCEL_MAX_DEVICES,
 				  ACCEL_DRIVER_NAME);
 	if (ret < 0) {
 		pr_err("Failed to allocate chrdev region: %d\n", ret);
-		return ret;
+		goto err_queue_exit;
 	}
 
 	/* Create device class for udev */
@@ -804,6 +811,8 @@ err_destroy_class:
 	class_destroy(accel_class);
 err_unregister_chrdev:
 	unregister_chrdev_region(accel_devt, ACCEL_MAX_DEVICES);
+err_queue_exit:
+	accel_queue_exit();
 	return ret;
 }
 
@@ -818,6 +827,7 @@ static void __exit accel_exit(void)
 	class_destroy(accel_class);
 	unregister_chrdev_region(accel_devt, ACCEL_MAX_DEVICES);
 	ida_destroy(&accel_ida);
+	accel_queue_exit();
 
 	pr_info("PCIe Accelerator driver unloaded\n");
 }
