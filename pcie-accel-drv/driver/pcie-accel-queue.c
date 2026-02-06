@@ -237,13 +237,14 @@ struct accel_request *accel_alloc_request(struct accel_queue *queue)
 }
 
 /**
- * accel_free_request - Free a request tracking structure
+ * __accel_free_request - Internal request free with timer control
  * @req: Request to free
+ * @sync_timer: If true, wait for timer to complete; if false, just deactivate
  *
  * Returns the request to the slab cache. Must be called after
  * the request is removed from all tracking structures.
  */
-void accel_free_request(struct accel_request *req)
+static void __accel_free_request(struct accel_request *req, bool sync_timer)
 {
 	struct accel_dev *dev = req->queue->dev;
 
@@ -259,10 +260,29 @@ void accel_free_request(struct accel_request *req)
 		req->mm = NULL;
 	}
 
-	/* Cancel timeout timer if active */
-	del_timer_sync(&req->timer);
+	/*
+	 * Cancel timeout timer. Use del_timer_sync when called from normal
+	 * context, but just del_timer when called from the timer callback
+	 * itself (to avoid deadlock).
+	 */
+	if (sync_timer)
+		del_timer_sync(&req->timer);
+	else
+		del_timer(&req->timer);
 
 	kmem_cache_free(dev->req_cache, req);
+}
+
+/**
+ * accel_free_request - Free a request tracking structure
+ * @req: Request to free
+ *
+ * Returns the request to the slab cache. Must be called after
+ * the request is removed from all tracking structures.
+ */
+void accel_free_request(struct accel_request *req)
+{
+	__accel_free_request(req, true);
 }
 
 /**
@@ -313,7 +333,8 @@ static void accel_request_timeout(struct timer_list *t)
 			io_uring_cmd_done(req->ioucmd, -ETIMEDOUT, 0,
 					  IO_URING_F_UNLOCKED);
 
-		accel_free_request(req);
+		/* Use non-syncing free - we're in the timer callback */
+		__accel_free_request(req, false);
 	} else {
 		spin_unlock_irqrestore(&queue->cq_lock, flags);
 	}
