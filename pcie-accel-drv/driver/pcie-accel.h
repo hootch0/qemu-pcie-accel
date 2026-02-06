@@ -295,7 +295,9 @@ struct accel_p2p_peer {
  */
 struct accel_dev {
 	struct pci_dev *pdev;
-	void __iomem *bar0;
+	void __iomem *bar0;			/* BAR0: Controller registers */
+	void __iomem *bar5_cxl;			/* BAR5: CXL component registers (optional) */
+	bool cxl_enabled;			/* True if CXL memory is attached */
 
 	struct cdev cdev;
 	dev_t devt;

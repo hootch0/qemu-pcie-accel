@@ -605,6 +605,26 @@ static int accel_pci_probe(struct pci_dev *pdev,
 		goto err_release_regions;
 	}
 
+	/*
+	 * Try to map BAR5 for CXL component registers.
+	 * BAR5 is only present when CXL memory is attached.
+	 * This is optional - device works without CXL support.
+	 */
+	if (pci_resource_len(pdev, 5) > 0) {
+		dev->bar5_cxl = pci_iomap(pdev, 5, 0);
+		if (dev->bar5_cxl) {
+			dev->cxl_enabled = true;
+			dev_info(&pdev->dev,
+				 "CXL component registers mapped at BAR5 (size=%llu)\n",
+				 (unsigned long long)pci_resource_len(pdev, 5));
+		} else {
+			dev_warn(&pdev->dev,
+				 "BAR5 present but failed to map - CXL disabled\n");
+		}
+	} else {
+		dev_info(&pdev->dev, "No CXL support (BAR5 not present)\n");
+	}
+
 	/* Log device version and capabilities */
 	{
 		u32 vs = accel_reg_read32(dev, ACCEL_REG_VS);
@@ -673,6 +693,8 @@ err_free_ida:
 	ida_simple_remove(&accel_ida, dev_id);
 err_free_msix:
 	accel_free_msix(dev);
+	if (dev->bar5_cxl)
+		pci_iounmap(pdev, dev->bar5_cxl);
 	pci_iounmap(pdev, dev->bar0);
 err_release_regions:
 	pci_release_regions(pdev);
@@ -723,6 +745,10 @@ static void accel_pci_remove(struct pci_dev *pdev)
 
 	/* Free MSI-X vectors */
 	accel_free_msix(dev);
+
+	/* Unmap BAR5 (CXL component registers) if mapped */
+	if (dev->bar5_cxl)
+		pci_iounmap(pdev, dev->bar5_cxl);
 
 	/* Unmap BAR0 */
 	if (dev->bar0)
