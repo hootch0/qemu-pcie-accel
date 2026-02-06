@@ -66,11 +66,9 @@ int accel_register_p2p_peer(PCIeAccel *n, uint16_t bdf, PCIDevice *pdev)
 {
     AccelP2PPeer *peer;
 
-    /* Check if already registered */
+    /* Check if already registered - idempotent, return success */
     if (accel_find_p2p_peer(n, bdf)) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "pcie-accel: P2P peer 0x%x already registered\n", bdf);
-        return -1;
+        return 0;
     }
 
     /* Check capacity */
