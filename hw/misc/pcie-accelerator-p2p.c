@@ -357,6 +357,9 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
         req->cqe.result = cpu_to_le32(total_len);
     } else {
         n->stats.cmd_errors++;
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pcie-accel: P2P transfer failed: peer=0x%x status=0x%x "
+                      "active_xfers=%u\n", peer_bdf, status, peer->active_xfers);
     }
 
     return status;
