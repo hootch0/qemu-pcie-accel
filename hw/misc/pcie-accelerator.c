@@ -213,14 +213,22 @@ void accel_irq_assert(PCIeAccel *n, AccelCQueue *cq)
     if (fire_irq) {
         if (msix_enabled(pci)) {
             /* MSI-X: Direct vector notification */
+            qemu_log_mask(LOG_UNIMP,
+                          "pcie-accel: MSI-X notify: cqid=%u vector=%u\n",
+                          cq->cqid, cq->vector);
             trace_pcie_accel_irq_assert(cq->cqid, cq->vector);
             msix_notify(pci, cq->vector);
         } else if (msi_enabled(pci)) {
             /* MSI: Use vector as index */
+            qemu_log_mask(LOG_UNIMP,
+                          "pcie-accel: MSI notify: cqid=%u vector=%u\n",
+                          cq->cqid, cq->vector);
             MSIMessage msg = msi_get_message(pci, cq->vector);
             pci_dma_write(pci, msg.address, &msg.data, sizeof(msg.data));
         } else {
             /* Legacy INTx */
+            qemu_log_mask(LOG_UNIMP,
+                          "pcie-accel: INTx assert: cqid=%u\n", cq->cqid);
             n->irq_status |= (1 << cq->vector);
             accel_irq_check(n);
         }
@@ -379,6 +387,9 @@ void accel_post_cqes(void *opaque)
     }
 
     /* Fire interrupt if new completions posted */
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: post_cqes IRQ check: tail=%u head=%u pending_before=%d irq_en=%d\n",
+                  cq->tail, cq->head, pending_before, cq->irq_enabled);
     if (cq->tail != cq->head) {
         if (!pending_before && cq->irq_enabled) {
             qemu_log_mask(LOG_UNIMP,
@@ -664,8 +675,9 @@ uint16_t accel_cmd_create_cq(PCIeAccel *n, AccelRequest *req)
     AccelCQueue *cq;
 
     qemu_log_mask(LOG_UNIMP,
-                  "pcie-accel: CREATE_CQ: cqid=%u qsize=%u prp1=0x%" PRIx64 "\n",
-                  cqid, qsize, prp1);
+                  "pcie-accel: CREATE_CQ: cqid=%u qsize=%u prp1=0x%" PRIx64
+                  " vector=%u irq_en=%u\n",
+                  cqid, qsize, prp1, vector, irq_en);
 
     /* Validate CQ ID */
     if (cqid == 0 || cqid > n->max_ioqpairs) {
