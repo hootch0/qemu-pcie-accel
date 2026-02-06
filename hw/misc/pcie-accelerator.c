@@ -891,6 +891,12 @@ void accel_process_sq(void *opaque)
 
     trace_pcie_accel_process_sq(sq->sqid, sq->head, sq->tail);
 
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: process_sq called: sqid=%u head=%u tail=%u "
+                  "sq_empty=%d req_list_empty=%d\n",
+                  sq->sqid, sq->head, sq->tail,
+                  accel_sq_empty(sq), QTAILQ_EMPTY(&sq->req_list));
+
     /* Process commands until queue is empty or no requests available */
     while (!accel_sq_empty(sq) && !QTAILQ_EMPTY(&sq->req_list)) {
         /* Fetch command from host memory */
