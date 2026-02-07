@@ -873,6 +873,23 @@ int accel_p2p_queue_setup(struct accel_device *dev, uint16_t peer_bdf,
     return accel_submit_cmd(dev, 0, &cmd, &cqe, 5000);
 }
 
+/**
+ * accel_p2p_queue_teardown - Issue admin command to tear down a P2P queue pair
+ */
+int accel_p2p_queue_teardown(struct accel_device *dev, uint8_t slot)
+{
+    struct accel_cmd cmd = {0};
+    struct accel_cqe cqe;
+
+    if (!dev)
+        return ACCEL_ERR_INVAL;
+
+    cmd.opcode = ACCEL_ADM_CMD_P2P_QUEUE_TEARDOWN;
+    cmd.dw.admin.cdw10 = slot & 0xF;
+
+    return accel_submit_cmd(dev, 0, &cmd, &cqe, 5000);
+}
+
 /*
  * ===== Memory Mapping =====
  */

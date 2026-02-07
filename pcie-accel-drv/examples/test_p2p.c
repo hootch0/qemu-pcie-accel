@@ -653,10 +653,25 @@ static int run_p2p_queue_setup_test(struct accel_device *dev1,
     }
     printf("  Host-mediated P2P still functional\n\n");
 
-    printf("P2P MMIO queue setup: PASSED\n");
-    printf("  Both devices have active P2P queue pairs.\n");
-    printf("  Devices can now exchange commands directly via MMIO\n");
-    printf("  without host CPU involvement.\n");
+    /* Tear down P2P queues */
+    printf("Tearing down P2P queues...\n");
+    ret = accel_p2p_queue_teardown(dev1, 0);
+    if (ret != ACCEL_SUCCESS) {
+        fprintf(stderr, "  dev1 teardown FAILED: %s (ret=%d)\n",
+                accel_strerror(ret), ret);
+        return -1;
+    }
+    printf("  dev1 slot 0: OK\n");
+
+    ret = accel_p2p_queue_teardown(dev2, 0);
+    if (ret != ACCEL_SUCCESS) {
+        fprintf(stderr, "  dev2 teardown FAILED: %s (ret=%d)\n",
+                accel_strerror(ret), ret);
+        return -1;
+    }
+    printf("  dev2 slot 0: OK\n\n");
+
+    printf("P2P MMIO queue setup/teardown: PASSED\n");
 
     return 0;
 }

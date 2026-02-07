@@ -571,6 +571,15 @@ int accel_setup_p2p_peer(struct accel_device *dev, uint16_t peer_bdf);
 int accel_p2p_queue_setup(struct accel_device *dev, uint16_t peer_bdf,
                           uint8_t slot, uint8_t peer_slot);
 
+/**
+ * accel_p2p_queue_teardown - Tear down a P2P MMIO queue pair
+ * @dev: Device handle
+ * @slot: Slot number to tear down (0-6)
+ *
+ * Returns: ACCEL_SUCCESS or error code
+ */
+int accel_p2p_queue_teardown(struct accel_device *dev, uint8_t slot);
+
 /*
  * ----- Memory Mapping -----
  */
