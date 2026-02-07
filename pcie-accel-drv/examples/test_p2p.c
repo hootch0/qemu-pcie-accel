@@ -604,6 +604,64 @@ out:
 }
 
 /**
+ * run_p2p_queue_setup_test - Test P2P MMIO queue setup between two devices
+ *
+ * Sets up P2P MMIO queues between two devices so they can exchange
+ * commands directly via MMIO. After setup, runs a regular P2P write/read
+ * to verify the devices still function correctly with queues active.
+ */
+static int run_p2p_queue_setup_test(struct accel_device *dev1,
+                                     struct accel_device *dev2,
+                                     uint16_t bdf1, uint16_t bdf2,
+                                     uint16_t qid, size_t size)
+{
+    int ret;
+
+    printf("P2P MMIO Queue Setup Test\n");
+    printf("=========================\n\n");
+
+    /*
+     * Set up P2P queues: dev1 uses slot 0 for dev2, dev2 uses slot 0 for dev1.
+     * slot = our slot in peer's device (where peer writes inbound SQEs to us)
+     * peer_slot = peer's slot in our device (where we receive CQEs)
+     */
+    printf("Setting up P2P queue: dev1 -> dev2 (slot=0, peer_slot=0)...\n");
+    ret = accel_p2p_queue_setup(dev1, bdf2, 0, 0);
+    if (ret != ACCEL_SUCCESS) {
+        fprintf(stderr, "  FAILED: %s (ret=%d)\n", accel_strerror(ret), ret);
+        return -1;
+    }
+    printf("  OK\n");
+
+    printf("Setting up P2P queue: dev2 -> dev1 (slot=0, peer_slot=0)...\n");
+    ret = accel_p2p_queue_setup(dev2, bdf1, 0, 0);
+    if (ret != ACCEL_SUCCESS) {
+        fprintf(stderr, "  FAILED: %s (ret=%d)\n", accel_strerror(ret), ret);
+        return -1;
+    }
+    printf("  OK\n\n");
+
+    /*
+     * Verify devices still work with P2P queues active by running
+     * a regular host-mediated P2P write/read cycle.
+     */
+    printf("Verifying host-mediated P2P still works with queues active...\n");
+    ret = run_p2p_test_sync(dev1, dev2, bdf2, qid, size, 0);
+    if (ret != 0) {
+        fprintf(stderr, "  Host P2P test FAILED after queue setup\n");
+        return -1;
+    }
+    printf("  Host-mediated P2P still functional\n\n");
+
+    printf("P2P MMIO queue setup: PASSED\n");
+    printf("  Both devices have active P2P queue pairs.\n");
+    printf("  Devices can now exchange commands directly via MMIO\n");
+    printf("  without host CPU involvement.\n");
+
+    return 0;
+}
+
+/**
  * print_usage - Print usage information
  */
 static void print_usage(const char *prog)
@@ -618,11 +676,13 @@ static void print_usage(const char *prog)
            DEFAULT_CONCURRENT);
     printf("  -a              Use async mode with io_uring\n");
     printf("  -b              Use bidirectional async mode\n");
+    printf("  -q              Test P2P MMIO queue setup\n");
     printf("  -h              Show this help\n");
     printf("\nModes:\n");
     printf("  (default)       Synchronous write/read per iteration\n");
     printf("  -a              Concurrent async transfers using io_uring\n");
     printf("  -b              Bidirectional transfers (dev1<->dev2)\n");
+    printf("  -q              Set up P2P MMIO queues and verify\n");
     printf("\nNote: Both devices must exist and be accessible.\n");
 }
 
@@ -636,6 +696,7 @@ int main(int argc, char *argv[])
     uint16_t qid = 1;
     bool async_mode = false;
     bool bidirectional = false;
+    bool queue_setup_test = false;
     struct accel_device *dev1 = NULL;
     struct accel_device *dev2 = NULL;
     uint16_t bdf1, bdf2;
@@ -643,7 +704,7 @@ int main(int argc, char *argv[])
     int ret;
 
     /* Parse arguments */
-    while ((opt = getopt(argc, argv, "1:2:s:n:c:abh")) != -1) {
+    while ((opt = getopt(argc, argv, "1:2:s:n:c:abqh")) != -1) {
         switch (opt) {
         case '1':
             device1 = optarg;
@@ -666,6 +727,9 @@ int main(int argc, char *argv[])
         case 'b':
             bidirectional = true;
             break;
+        case 'q':
+            queue_setup_test = true;
+            break;
         case 'h':
         default:
             print_usage(argv[0]);
@@ -680,6 +744,7 @@ int main(int argc, char *argv[])
     printf("Size:       %zu bytes\n", size);
     printf("Iterations: %d\n", iterations);
     printf("Mode:       %s\n",
+           queue_setup_test ? "P2P MMIO queue setup" :
            bidirectional ? "bidirectional async" :
            async_mode ? "concurrent async" : "synchronous");
     if (async_mode)
@@ -762,7 +827,12 @@ int main(int argc, char *argv[])
     int passed = 0;
     int failed = 0;
 
-    if (bidirectional) {
+    if (queue_setup_test) {
+        /* P2P MMIO queue setup test */
+        ret = run_p2p_queue_setup_test(dev1, dev2, bdf1, bdf2, qid, size);
+        passed = (ret == 0) ? 1 : 0;
+        failed = (ret == 0) ? 0 : 1;
+    } else if (bidirectional) {
         /* Bidirectional async test */
         ret = run_bidirectional_async(dev1, dev2, bdf1, bdf2, qid, size,
                                       iterations, &passed, &failed);

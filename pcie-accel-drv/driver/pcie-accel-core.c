@@ -605,6 +605,19 @@ static int accel_pci_probe(struct pci_dev *pdev,
 		goto err_release_regions;
 	}
 
+	/* Map BAR2 (P2P queues + data) if present */
+	if (pci_resource_len(pdev, 2)) {
+		dev->bar2 = pci_iomap(pdev, 2, 0);
+		if (!dev->bar2) {
+			dev_warn(&pdev->dev, "Failed to map BAR2\n");
+		} else {
+			dev->bar2_size = pci_resource_len(pdev, 2);
+			dev_info(&pdev->dev, "BAR2 mapped: %pR (%zu bytes)\n",
+				 &pdev->resource[2],
+				 (size_t)dev->bar2_size);
+		}
+	}
+
 	/* Log device version and capabilities */
 	{
 		u32 vs = accel_reg_read32(dev, ACCEL_REG_VS);
@@ -673,6 +686,8 @@ err_free_ida:
 	ida_simple_remove(&accel_ida, dev_id);
 err_free_msix:
 	accel_free_msix(dev);
+	if (dev->bar2)
+		pci_iounmap(pdev, dev->bar2);
 	pci_iounmap(pdev, dev->bar0);
 err_release_regions:
 	pci_release_regions(pdev);
@@ -724,7 +739,9 @@ static void accel_pci_remove(struct pci_dev *pdev)
 	/* Free MSI-X vectors */
 	accel_free_msix(dev);
 
-	/* Unmap BAR0 */
+	/* Unmap BARs */
+	if (dev->bar2)
+		pci_iounmap(pdev, dev->bar2);
 	if (dev->bar0)
 		pci_iounmap(pdev, dev->bar0);
 

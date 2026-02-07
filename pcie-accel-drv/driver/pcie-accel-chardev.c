@@ -380,6 +380,21 @@ int accel_uring_cmd(struct io_uring_cmd *ioucmd, unsigned int issue_flags)
 						      issue_flags);
 		}
 
+	case ACCEL_URING_CMD_P2P_QUEUE_SETUP:
+		/*
+		 * P2P queue setup via uring: extract params from cmd fields
+		 * and delegate to the admin command path (qid=0).
+		 */
+		{
+			struct accel_uring_cmd admin_ucmd = *ucmd;
+			admin_ucmd.op = ACCEL_URING_CMD_SUBMIT;
+			admin_ucmd.qid = 0;
+			admin_ucmd.submit.cmd.opcode =
+				ACCEL_ADM_CMD_P2P_QUEUE_SETUP;
+			return accel_uring_cmd_submit(ioucmd, dev, &admin_ucmd,
+						      issue_flags);
+		}
+
 	default:
 		return -EINVAL;
 	}
@@ -594,6 +609,13 @@ static long accel_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	case ACCEL_IOC_GET_STATS:
 		return accel_ioctl_get_stats(dev, arg);
+
+	case ACCEL_IOC_P2P_QUEUE_SETUP: {
+		struct accel_p2p_queue_setup params;
+		if (copy_from_user(&params, (void __user *)arg, sizeof(params)))
+			return -EFAULT;
+		return accel_p2p_queue_setup(dev, &params);
+	}
 
 	default:
 		return -ENOTTY;

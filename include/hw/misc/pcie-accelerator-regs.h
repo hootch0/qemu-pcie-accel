@@ -56,7 +56,12 @@
  *                1 = PASID/SVA supported via PCIe capability
  *                Reset: 1 (supported)
  *
- * Bits [47:38] - Reserved (must be 0)
+ * Bit [38]     - P2Q: P2P MMIO Queues Supported
+ *                0 = P2P MMIO queues not supported
+ *                1 = Device supports NVMe-style P2P MMIO queues
+ *                Reset: 1 (supported)
+ *
+ * Bits [47:39] - Reserved (must be 0)
  *
  * Bits [51:48] - MPSMIN: Memory Page Size Minimum
  *                Minimum host memory page size = 2^(12 + MPSMIN) bytes
@@ -81,6 +86,7 @@
 #define ACCEL_CAP_DSTRD_MASK    0xF
 #define ACCEL_CAP_P2P_SHIFT     36
 #define ACCEL_CAP_SVA_SHIFT     37
+#define ACCEL_CAP_P2Q_SHIFT     38
 #define ACCEL_CAP_MPSMIN_SHIFT  48
 #define ACCEL_CAP_MPSMIN_MASK   0xF
 #define ACCEL_CAP_MPSMAX_SHIFT  52
@@ -389,6 +395,8 @@
 #define ACCEL_ADM_CMD_SET_FEATURES      0x09
 #define ACCEL_ADM_CMD_P2P_SETUP         0x10
 #define ACCEL_ADM_CMD_P2P_TEARDOWN      0x11
+#define ACCEL_ADM_CMD_P2P_QUEUE_SETUP   0x12
+#define ACCEL_ADM_CMD_P2P_QUEUE_TEARDOWN 0x13
 
 /* I/O Command Set */
 #define ACCEL_CMD_LOOPBACK              0x01
@@ -480,9 +488,86 @@
 #define ACCEL_FEAT_NUM_QUEUES           0x07  /* Number of queues */
 #define ACCEL_FEAT_P2P_CONFIG           0x10  /* P2P configuration */
 
+/* ===== P2P Queue Configuration Register (P2QQCFG) - Offset 0x0060 ===== */
+/*
+ * 32-bit read-only register describing P2P MMIO queue capabilities.
+ *
+ * Bits [3:0]   - P2Q_SLOTS: Number of P2P queue pair slots (0-7)
+ *                Each slot supports one peer device.
+ *                Reset: 7
+ *
+ * Bits [15:4]  - P2Q_SIZE: P2P queue size in entries per queue
+ *                Both SQ and CQ use the same size.
+ *                Reset: 64
+ *
+ * Bits [31:16] - P2Q_DATA_SIZE: Data region size in 4KB units
+ *                Amount of BAR2 space available for data transfers.
+ *                Reset: 52 (208KB)
+ */
+#define ACCEL_REG_P2QQCFG               0x0060
+
+#define ACCEL_P2QQCFG_SLOTS_SHIFT       0
+#define ACCEL_P2QQCFG_SLOTS_MASK        0xF
+#define ACCEL_P2QQCFG_SIZE_SHIFT        4
+#define ACCEL_P2QQCFG_SIZE_MASK         0xFFF
+#define ACCEL_P2QQCFG_DATA_SIZE_SHIFT   16
+#define ACCEL_P2QQCFG_DATA_SIZE_MASK    0xFFFF
+
+/* ===== P2P Queue Doorbell Registers - Offset 0x4000 ===== */
+/*
+ * Doorbell registers for P2P MMIO queues between devices.
+ * These are written by PEER devices via cross-device MMIO writes
+ * (address_space_write to this device's BAR0).
+ *
+ * Per peer slot (8 bytes per slot):
+ *   Offset 0x4000 + slot*8 + 0: Inbound SQ Tail Doorbell (32-bit write-only)
+ *     Written by peer after submitting commands to our inbound SQ.
+ *     Bits [15:0] = new SQ tail value.
+ *
+ *   Offset 0x4000 + slot*8 + 4: Receive CQ Notify Doorbell (32-bit write-only)
+ *     Written by peer after pushing CQE to our receive CQ.
+ *     Bits [15:0] = new CQ tail value.
+ */
+#define ACCEL_P2Q_DB_BASE               0x4000
+#define ACCEL_P2Q_DB_STRIDE             8
+
+#define ACCEL_P2Q_SQ_TAIL_DB(slot) \
+    (ACCEL_P2Q_DB_BASE + (slot) * ACCEL_P2Q_DB_STRIDE)
+#define ACCEL_P2Q_CQ_NOTIFY_DB(slot) \
+    (ACCEL_P2Q_DB_BASE + (slot) * ACCEL_P2Q_DB_STRIDE + 4)
+
+/* ===== P2P Queue Constants ===== */
+#define ACCEL_P2Q_MAX_SLOTS             7       /* Max peer queue slots */
+#define ACCEL_P2Q_SQ_ENTRIES            64      /* Entries per inbound SQ */
+#define ACCEL_P2Q_CQ_ENTRIES            64      /* Entries per receive CQ */
+
+/* BAR2 layout for P2P queues + data */
+#define ACCEL_P2Q_SQ_OFFSET(slot)       ((slot) * 0x1000)       /* 4KB per SQ */
+#define ACCEL_P2Q_SQ_SIZE               (ACCEL_P2Q_SQ_ENTRIES * 64)  /* 4KB */
+#define ACCEL_P2Q_CQ_BASE               0x8000
+#define ACCEL_P2Q_CQ_OFFSET(slot)       (ACCEL_P2Q_CQ_BASE + (slot) * 0x400) /* 1KB per CQ */
+#define ACCEL_P2Q_CQ_SIZE               (ACCEL_P2Q_CQ_ENTRIES * 16)  /* 1KB */
+#define ACCEL_P2Q_DATA_OFFSET           0xC000  /* Start of data/scratchpad region */
+
+/* ===== P2P Queue Command Opcodes ===== */
+/*
+ * Commands submitted via P2P MMIO queues (device-to-device).
+ * These use a separate opcode range (0x80+) from host I/O commands.
+ */
+#define ACCEL_P2Q_CMD_MMIO_WRITE        0x80  /* Transfer data: submitter -> target */
+#define ACCEL_P2Q_CMD_MMIO_READ         0x81  /* Transfer data: target -> submitter */
+#define ACCEL_P2Q_CMD_LOOPBACK          0x82  /* Target loopback test */
+
+/* ===== P2P Queue Status Codes ===== */
+#define ACCEL_SC_P2Q_INVALID_SLOT       0x50  /* Invalid P2P queue slot */
+#define ACCEL_SC_P2Q_SLOT_ACTIVE        0x51  /* Slot already in use */
+#define ACCEL_SC_P2Q_PEER_MISMATCH      0x52  /* Peer device type mismatch */
+#define ACCEL_SC_P2Q_DATA_RANGE         0x53  /* Data offset out of range */
+#define ACCEL_SC_P2Q_XFER_ERROR         0x54  /* Cross-device MMIO transfer error */
+
 /* ===== BAR Sizes and Offsets ===== */
 #define ACCEL_BAR0_SIZE     (64 * 1024)   /* 64KB - Controller registers */
-#define ACCEL_BAR2_SIZE     (256 * 1024)  /* 256KB - P2P scratchpad RAM */
+#define ACCEL_BAR2_SIZE     (256 * 1024)  /* 256KB - P2P queues + data RAM */
 #define ACCEL_BAR4_SIZE     (16 * 1024)   /* 16KB - MSI-X table/PBA */
 
 /* MSI-X table/PBA offsets within BAR4 */

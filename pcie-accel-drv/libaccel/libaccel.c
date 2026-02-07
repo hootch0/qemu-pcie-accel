@@ -846,6 +846,34 @@ void accel_cancel_batch(struct accel_device *dev)
 }
 
 /*
+ * ===== P2P MMIO Queue Setup =====
+ */
+
+/**
+ * accel_p2p_queue_setup - Issue admin command to set up P2P queue pair
+ *
+ * The host orchestrates P2P queue setup between devices. After setup,
+ * the devices exchange commands directly via MMIO without host involvement.
+ */
+int accel_p2p_queue_setup(struct accel_device *dev, uint16_t peer_bdf,
+                          uint8_t slot, uint8_t peer_slot)
+{
+    struct accel_cmd cmd = {0};
+    struct accel_cqe cqe;
+
+    if (!dev)
+        return ACCEL_ERR_INVAL;
+
+    cmd.opcode = ACCEL_ADM_CMD_P2P_QUEUE_SETUP;
+    cmd.dw.admin.cdw10 = (peer_bdf & 0xFFFF) |
+                         ((slot & 0xF) << 16) |
+                         ((peer_slot & 0xF) << 20);
+    /* BAR addresses left as 0 - driver resolves them from PCI config */
+
+    return accel_submit_cmd(dev, 0, &cmd, &cqe, 5000);
+}
+
+/*
  * ===== Memory Mapping =====
  */
 

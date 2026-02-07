@@ -80,6 +80,8 @@ extern "C" {
 #define ACCEL_ADM_CMD_CREATE_CQ     0x05
 #define ACCEL_ADM_CMD_IDENTIFY      0x06
 #define ACCEL_ADM_CMD_P2P_SETUP     0x10
+#define ACCEL_ADM_CMD_P2P_QUEUE_SETUP 0x12
+#define ACCEL_ADM_CMD_P2P_QUEUE_TEARDOWN 0x13
 
 /* I/O commands */
 #define ACCEL_CMD_LOOPBACK          0x01
@@ -551,6 +553,23 @@ void accel_cancel_batch(struct accel_device *dev);
  * Returns: ACCEL_SUCCESS or error code
  */
 int accel_setup_p2p_peer(struct accel_device *dev, uint16_t peer_bdf);
+
+/**
+ * accel_p2p_queue_setup - Set up P2P MMIO queue pair via admin command
+ * @dev: Device handle
+ * @peer_bdf: Peer device BDF (bus << 8 | devfn)
+ * @slot: Slot for this peer in our device (0-6)
+ * @peer_slot: Our slot in the peer's device (0-6)
+ *
+ * Issues admin command to configure a P2P MMIO queue pair on the device.
+ * The driver resolves peer BAR addresses from PCI config space.
+ * After setup, the devices exchange commands directly via MMIO without
+ * host involvement.
+ *
+ * Returns: ACCEL_SUCCESS or error code
+ */
+int accel_p2p_queue_setup(struct accel_device *dev, uint16_t peer_bdf,
+                          uint8_t slot, uint8_t peer_slot);
 
 /*
  * ----- Memory Mapping -----

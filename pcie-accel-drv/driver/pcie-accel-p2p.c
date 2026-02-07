@@ -435,3 +435,87 @@ void accel_p2p_dma_unmap(struct accel_dev *dev, dma_addr_t dma_addr, size_t len)
 {
 	dma_unmap_single(&dev->pdev->dev, dma_addr, len, DMA_BIDIRECTIONAL);
 }
+
+/*
+ * ===== P2P MMIO Queue Support =====
+ */
+
+/**
+ * accel_p2p_queue_setup - Set up a P2P MMIO queue pair with a peer
+ * @dev: Device structure
+ * @params: P2P queue setup parameters
+ *
+ * Issues an admin command to the device to set up a P2P MMIO queue pair.
+ * The peer's BAR addresses are read from PCI config space if not provided.
+ *
+ * Returns: 0 on success, negative errno on failure
+ */
+int accel_p2p_queue_setup(struct accel_dev *dev,
+			  struct accel_p2p_queue_setup *params)
+{
+	struct accel_cmd cmd = {};
+	struct accel_cqe cqe = {};
+	struct pci_dev *peer_pdev;
+	resource_size_t peer_bar0, peer_bar2;
+	int ret;
+
+	if (params->slot >= ACCEL_P2Q_MAX_SLOTS ||
+	    params->peer_slot >= ACCEL_P2Q_MAX_SLOTS)
+		return -EINVAL;
+
+	/* If BAR addresses not provided, read from peer's PCI config */
+	if (params->peer_bar0 == 0 || params->peer_bar2 == 0) {
+		peer_pdev = pci_get_domain_bus_and_slot(
+			pci_domain_nr(dev->pdev->bus),
+			(params->peer_bdf >> 8) & 0xFF,
+			PCI_DEVFN((params->peer_bdf >> 3) & 0x1F,
+				  params->peer_bdf & 0x7));
+		if (!peer_pdev) {
+			dev_err(&dev->pdev->dev,
+				"P2P queue: peer 0x%x not found\n",
+				params->peer_bdf);
+			return -ENODEV;
+		}
+
+		peer_bar0 = pci_resource_start(peer_pdev, 0);
+		peer_bar2 = pci_resource_start(peer_pdev, 2);
+		pci_dev_put(peer_pdev);
+
+		if (!peer_bar0 || !peer_bar2) {
+			dev_err(&dev->pdev->dev,
+				"P2P queue: peer 0x%x BAR not mapped\n",
+				params->peer_bdf);
+			return -EINVAL;
+		}
+	} else {
+		peer_bar0 = params->peer_bar0;
+		peer_bar2 = params->peer_bar2;
+	}
+
+	/* Build P2P queue setup admin command */
+	cmd.opcode = ACCEL_ADM_CMD_P2P_QUEUE_SETUP;
+	cmd.dw.admin.cdw10 = cpu_to_le32(
+		(params->peer_bdf & 0xFFFF) |
+		((params->slot & 0xF) << 16) |
+		((params->peer_slot & 0xF) << 20));
+	cmd.dw.admin.cdw11 = cpu_to_le32(peer_bar0 & 0xFFFFFFFF);
+	cmd.dw.admin.cdw12 = cpu_to_le32((peer_bar0 >> 32) & 0xFFFFFFFF);
+	cmd.dw.admin.cdw13 = cpu_to_le32(peer_bar2 & 0xFFFFFFFF);
+	cmd.dw.admin.cdw14 = cpu_to_le32((peer_bar2 >> 32) & 0xFFFFFFFF);
+
+	ret = accel_submit_admin_cmd(dev, &cmd, &cqe);
+	if (ret) {
+		dev_err(&dev->pdev->dev,
+			"P2P queue setup failed: slot=%u peer=0x%x ret=%d\n",
+			params->slot, params->peer_bdf, ret);
+		return ret;
+	}
+
+	dev_info(&dev->pdev->dev,
+		 "P2P queue setup: slot=%u peer=0x%x peer_slot=%u "
+		 "bar0=0x%llx bar2=0x%llx\n",
+		 params->slot, params->peer_bdf, params->peer_slot,
+		 (unsigned long long)peer_bar0, (unsigned long long)peer_bar2);
+
+	return 0;
+}
