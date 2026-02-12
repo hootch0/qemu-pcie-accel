@@ -1510,9 +1510,11 @@ void pcie_accel_realize(PCIDevice *pci_dev, Error **errp)
                      PCI_BASE_ADDRESS_MEM_TYPE_32,
                      &n->msix_bar);
 
-    /* Initialize BAR4 (P2P scratchpad RAM) */
-    memory_region_init_ram(&n->bar4, OBJECT(n), "pcie-accel-bar4",
-                           ACCEL_BAR4_SIZE, &local_err);
+    /* Initialize BAR4 (P2P scratchpad RAM - sparse file-backed) */
+    memory_region_init_ram_from_file(&n->bar4, OBJECT(n), "pcie-accel-bar4",
+                                     ACCEL_BAR4_SIZE, 0,
+                                     RAM_SHARED | RAM_NORESERVE,
+                                     "/tmp", 0, &local_err);
     if (local_err) {
         error_propagate(errp, local_err);
         return;
