@@ -7,8 +7,9 @@
  * See the COPYING file in the top-level directory.
  *
  * This file defines the register layout and constants for the PCIe Accelerator
- * virtual device. The device follows NVMe-style queue management with doorbell
- * registers, supports PCIe P2P DMA, PASID/SVA, and MSI-X interrupts with coalescing.
+ * virtual device. The device uses submission/completion queue management with
+ * doorbell registers, supports PCIe P2P DMA, PASID/SVA, and MSI-X interrupts
+ * with coalescing.
  */
 
 #ifndef HW_PCIE_ACCELERATOR_REGS_H
@@ -17,8 +18,7 @@
 /*
  * ===== Controller Register Map (BAR0 - 64KB MMIO) =====
  *
- * The register layout follows NVMe specification patterns for familiarity
- * and proven design. All multi-byte fields are little-endian.
+ * All multi-byte fields are little-endian.
  */
 
 /* ===== Controller Capability Register (CAP) - Offset 0x0000 ===== */
@@ -58,7 +58,7 @@
  *
  * Bit [38]     - P2Q: P2P MMIO Queues Supported
  *                0 = P2P MMIO queues not supported
- *                1 = Device supports NVMe-style P2P MMIO queues
+ *                1 = Device supports P2P MMIO queues
  *                Reset: 1 (supported)
  *
  * Bits [47:39] - Reserved (must be 0)
@@ -189,7 +189,7 @@
  *                10 = Shutdown processing complete
  *                11 = Reserved
  *
- * Bit [4]      - NSSRO: NVM Subsystem Reset Occurred
+ * Bit [4]      - SSRO: Subsystem Reset Occurred
  *                0 = No subsystem reset occurred
  *                1 = Subsystem reset occurred (informational)
  *
@@ -207,7 +207,7 @@
 #define ACCEL_CSTS_CFS_MASK     0x1
 #define ACCEL_CSTS_SHST_SHIFT   2
 #define ACCEL_CSTS_SHST_MASK    0x3
-#define ACCEL_CSTS_NSSRO_SHIFT  4
+#define ACCEL_CSTS_SSRO_SHIFT   4
 #define ACCEL_CSTS_PP_SHIFT     5
 
 /* Shutdown status values */
@@ -500,9 +500,9 @@
  *                Both SQ and CQ use the same size.
  *                Reset: 64
  *
- * Bits [31:16] - P2Q_DATA_SIZE: Data region size in 4KB units
- *                Amount of BAR2 space available for data transfers.
- *                Reset: 52 (208KB)
+ * Bits [31:16] - P2Q_DATA_SIZE: Data region size in 1GB units
+ *                Amount of BAR4 space available for data transfers.
+ *                Reset: 1024 (~1TB)
  */
 #define ACCEL_REG_P2QQCFG               0x0060
 
@@ -541,7 +541,7 @@
 #define ACCEL_P2Q_SQ_ENTRIES            64      /* Entries per inbound SQ */
 #define ACCEL_P2Q_CQ_ENTRIES            64      /* Entries per receive CQ */
 
-/* BAR2 layout for P2P queues + data */
+/* BAR4 layout for P2P queues + data */
 #define ACCEL_P2Q_SQ_OFFSET(slot)       ((slot) * 0x1000)       /* 4KB per SQ */
 #define ACCEL_P2Q_SQ_SIZE               (ACCEL_P2Q_SQ_ENTRIES * 64)  /* 4KB */
 #define ACCEL_P2Q_CQ_BASE               0x8000
@@ -567,12 +567,12 @@
 
 /* ===== BAR Sizes and Offsets ===== */
 #define ACCEL_BAR0_SIZE     (64 * 1024)   /* 64KB - Controller registers */
-#define ACCEL_BAR2_SIZE     (256 * 1024)  /* 256KB - P2P queues + data RAM */
-#define ACCEL_BAR4_SIZE     (16 * 1024)   /* 16KB - MSI-X table/PBA */
+#define ACCEL_BAR2_SIZE     (16 * 1024)   /* 16KB - MSI-X table/PBA */
+#define ACCEL_BAR4_SIZE     (1ULL << 40)  /* 1TB - P2P queues + data RAM */
 
-/* MSI-X table/PBA offsets within BAR4 */
-#define ACCEL_MSIX_TABLE_OFFSET     0x0000  /* MSI-X table at BAR4 offset 0 */
-#define ACCEL_MSIX_PBA_OFFSET       0x1000  /* MSI-X PBA at BAR4 offset 4KB */
+/* MSI-X table/PBA offsets within BAR2 */
+#define ACCEL_MSIX_TABLE_OFFSET     0x0000  /* MSI-X table at BAR2 offset 0 */
+#define ACCEL_MSIX_PBA_OFFSET       0x1000  /* MSI-X PBA at BAR2 offset 4KB */
 
 /* ===== Maximum Values ===== */
 #define ACCEL_MAX_IOQPAIRS      256     /* Maximum I/O queue pairs */

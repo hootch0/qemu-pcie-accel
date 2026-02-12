@@ -135,7 +135,7 @@ void accel_queue_exit(void)
  * ===== Doorbell Operations =====
  *
  * Doorbells are memory-mapped registers that notify the device of new
- * submissions or completed processing. They follow NVMe conventions:
+ * submissions or completed processing. Convention:
  * - SQ doorbell: Write new tail pointer to notify of new commands
  * - CQ doorbell: Write new head pointer to acknowledge processed completions
  *

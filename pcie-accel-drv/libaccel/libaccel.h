@@ -335,12 +335,12 @@ int accel_loopback(struct accel_device *dev, uint16_t qid,
  * @qid: Queue ID
  * @peer_bdf: Target peer BDF
  * @local_data: Local data buffer (source)
- * @peer_addr: Offset within peer's BAR2 scratchpad memory (destination)
+ * @peer_addr: Offset within peer's BAR4 scratchpad memory (destination)
  * @length: Transfer length in bytes
  *
- * Writes data from local host memory to the peer device's BAR2 scratchpad
+ * Writes data from local host memory to the peer device's BAR4 scratchpad
  * memory region. The peer_addr parameter is an offset within the peer's
- * 256KB BAR2 scratchpad, not an absolute address.
+ * BAR4 scratchpad, not an absolute address.
  *
  * Returns: ACCEL_SUCCESS or error code
  */
@@ -354,12 +354,12 @@ int accel_p2p_write(struct accel_device *dev, uint16_t qid,
  * @qid: Queue ID
  * @peer_bdf: Source peer BDF
  * @local_data: Local data buffer (destination)
- * @peer_addr: Offset within peer's BAR2 scratchpad memory (source)
+ * @peer_addr: Offset within peer's BAR4 scratchpad memory (source)
  * @length: Transfer length in bytes
  *
- * Reads data from the peer device's BAR2 scratchpad memory region to local
+ * Reads data from the peer device's BAR4 scratchpad memory region to local
  * host memory. The peer_addr parameter is an offset within the peer's
- * 256KB BAR2 scratchpad, not an absolute address.
+ * BAR4 scratchpad, not an absolute address.
  *
  * Returns: ACCEL_SUCCESS or error code
  */
@@ -407,12 +407,12 @@ int accel_async_loopback(struct accel_device *dev, uint16_t qid,
  * @qid: Queue ID
  * @peer_bdf: Target peer BDF
  * @local_data: Local data buffer
- * @peer_addr: Offset within peer's BAR2 scratchpad memory
+ * @peer_addr: Offset within peer's BAR4 scratchpad memory
  * @length: Transfer length
  * @token: Token for tracking
  *
  * Async version of accel_p2p_write. The peer_addr is an offset within
- * the peer device's 256KB BAR2 scratchpad memory region.
+ * the peer device's BAR4 scratchpad memory region.
  *
  * Returns: ACCEL_SUCCESS or error code
  */
@@ -427,12 +427,12 @@ int accel_async_p2p_write(struct accel_device *dev, uint16_t qid,
  * @qid: Queue ID
  * @peer_bdf: Source peer BDF
  * @local_data: Local data buffer
- * @peer_addr: Offset within peer's BAR2 scratchpad memory
+ * @peer_addr: Offset within peer's BAR4 scratchpad memory
  * @length: Transfer length
  * @token: Token for tracking
  *
  * Async version of accel_p2p_read. The peer_addr is an offset within
- * the peer device's 256KB BAR2 scratchpad memory region.
+ * the peer device's BAR4 scratchpad memory region.
  *
  * Returns: ACCEL_SUCCESS or error code
  */

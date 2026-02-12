@@ -79,7 +79,7 @@
 #define ACCEL_P2Q_CMD_MMIO_READ		0x81
 #define ACCEL_P2Q_CMD_LOOPBACK		0x82
 
-/* P2P Queue BAR2 layout */
+/* P2P Queue BAR4 layout */
 #define ACCEL_P2Q_MAX_SLOTS		7
 #define ACCEL_P2Q_SQ_ENTRIES		64
 #define ACCEL_P2Q_CQ_ENTRIES		64
@@ -295,9 +295,9 @@ struct accel_queue {
 struct accel_p2p_peer {
 	struct pci_dev *pdev;
 	u16 bdf;
-	void __iomem *mem;		/* BAR2 scratchpad mapping */
-	resource_size_t mem_size;	/* BAR2 size */
-	resource_size_t mem_phys;	/* BAR2 physical address */
+	void __iomem *mem;		/* BAR4 scratchpad mapping */
+	resource_size_t mem_size;	/* BAR4 size */
+	resource_size_t mem_phys;	/* BAR4 physical address */
 	struct list_head list;
 };
 
@@ -312,14 +312,14 @@ struct accel_p2p_queue_setup {
 	__u8	slot;			/* Slot in our device (0-6) */
 	__u8	peer_slot;		/* Our slot in peer's device (0-6) */
 	__u64	peer_bar0;		/* Peer's BAR0 physical address */
-	__u64	peer_bar2;		/* Peer's BAR2 physical address */
+	__u64	peer_bar4;		/* Peer's BAR4 physical address */
 };
 
 struct accel_dev {
 	struct pci_dev *pdev;
 	void __iomem *bar0;			/* BAR0: Controller registers */
-	void __iomem *bar2;			/* BAR2: P2P queues + data */
-	resource_size_t bar2_size;		/* BAR2 size */
+	void __iomem *bar4;			/* BAR4: P2P queues + data */
+	resource_size_t bar4_size;		/* BAR4 size */
 
 	struct cdev cdev;
 	dev_t devt;

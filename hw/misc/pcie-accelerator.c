@@ -7,7 +7,7 @@
  * See the COPYING file in the top-level directory.
  *
  * This file implements a PCIe accelerator device with:
- * - NVMe-style submission/completion queues with doorbell registers
+ * - Submission/completion queues with doorbell registers
  * - PCIe peer-to-peer (P2P) DMA with N:N concurrent transfers
  * - PASID/SVA support for shared virtual addressing
  * - MSI-X interrupts with coalescing
@@ -309,7 +309,7 @@ void accel_enqueue_req_completion(AccelCQueue *cq, AccelRequest *req)
  * @opaque: Completion queue pointer
  *
  * Bottom-half handler that writes CQEs to host memory and fires interrupts.
- * Implements the NVMe-style phase bit protocol for lock-free completion
+ * Implements the phase bit protocol for lock-free completion
  * detection.
  */
 void accel_post_cqes(void *opaque)
@@ -1502,30 +1502,30 @@ void pcie_accel_realize(PCIDevice *pci_dev, Error **errp)
                      PCI_BASE_ADDRESS_MEM_TYPE_64,
                      &n->bar0);
 
-    /* Initialize BAR2 (P2P scratchpad RAM) */
-    memory_region_init_ram(&n->bar2, OBJECT(n), "pcie-accel-bar2",
-                           ACCEL_BAR2_SIZE, &local_err);
-    if (local_err) {
-        error_propagate(errp, local_err);
-        return;
-    }
-    pci_register_bar(pci_dev, 2,
-                     PCI_BASE_ADDRESS_SPACE_MEMORY |
-                     PCI_BASE_ADDRESS_MEM_TYPE_64 |
-                     PCI_BASE_ADDRESS_MEM_PREFETCH,
-                     &n->bar2);
-
-    /* Initialize MSI-X */
+    /* Initialize BAR2 (MSI-X) */
     memory_region_init(&n->msix_bar, OBJECT(n), "pcie-accel-msix",
-                       ACCEL_BAR4_SIZE);
-    pci_register_bar(pci_dev, 4,
+                       ACCEL_BAR2_SIZE);
+    pci_register_bar(pci_dev, 2,
                      PCI_BASE_ADDRESS_SPACE_MEMORY |
                      PCI_BASE_ADDRESS_MEM_TYPE_32,
                      &n->msix_bar);
 
+    /* Initialize BAR4 (P2P scratchpad RAM) */
+    memory_region_init_ram(&n->bar4, OBJECT(n), "pcie-accel-bar4",
+                           ACCEL_BAR4_SIZE, &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
+        return;
+    }
+    pci_register_bar(pci_dev, 4,
+                     PCI_BASE_ADDRESS_SPACE_MEMORY |
+                     PCI_BASE_ADDRESS_MEM_TYPE_64 |
+                     PCI_BASE_ADDRESS_MEM_PREFETCH,
+                     &n->bar4);
+
     ret = msix_init(pci_dev, n->max_ioqpairs + 1,
-                    &n->msix_bar, 4, ACCEL_MSIX_TABLE_OFFSET,
-                    &n->msix_bar, 4, ACCEL_MSIX_PBA_OFFSET,
+                    &n->msix_bar, 2, ACCEL_MSIX_TABLE_OFFSET,
+                    &n->msix_bar, 2, ACCEL_MSIX_PBA_OFFSET,
                     0x00, &local_err);
     if (ret < 0) {
         error_propagate(errp, local_err);
@@ -1553,10 +1553,10 @@ void pcie_accel_realize(PCIDevice *pci_dev, Error **errp)
                     (n->p2p.max_xfers_per_peer << ACCEL_P2PCFG_MAX_XFERS_SHIFT);
 
     /* Initialize P2P Queue configuration */
-    uint32_t p2q_data_pages = (ACCEL_BAR2_SIZE - ACCEL_P2Q_DATA_OFFSET) / 4096;
+    uint32_t p2q_data_gb = (ACCEL_BAR4_SIZE - ACCEL_P2Q_DATA_OFFSET) / (1ULL << 30);
     n->p2p.p2qqcfg = (ACCEL_P2Q_MAX_SLOTS << ACCEL_P2QQCFG_SLOTS_SHIFT) |
                      (ACCEL_P2Q_SQ_ENTRIES << ACCEL_P2QQCFG_SIZE_SHIFT) |
-                     (p2q_data_pages << ACCEL_P2QQCFG_DATA_SIZE_SHIFT);
+                     (p2q_data_gb << ACCEL_P2QQCFG_DATA_SIZE_SHIFT);
 
     /* Initialize page size */
     n->page_size = 4096;

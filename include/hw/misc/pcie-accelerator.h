@@ -7,9 +7,9 @@
  * See the COPYING file in the top-level directory.
  *
  * This header defines the core data structures for the PCIe Accelerator device.
- * The device implements NVMe-style submission/completion queues with doorbell
- * registers, supports P2P DMA between multiple devices, PASID/SVA for shared
- * virtual addressing, and MSI-X interrupts with coalescing.
+ * The device implements submission/completion queues with doorbell registers,
+ * supports P2P DMA between multiple devices, PASID/SVA for shared virtual
+ * addressing, and MSI-X interrupts with coalescing.
  */
 
 #ifndef HW_PCIE_ACCELERATOR_H
@@ -36,7 +36,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(PCIeAccel, PCIE_ACCEL)
 /*
  * Submission Queue Entry (64 bytes)
  *
- * Generic command structure following NVMe CDW (Command Dword) pattern.
+ * Generic command structure using Command Dword (CDW) layout.
  * Commands are 64 bytes to match cache line size for efficient DMA.
  */
 typedef struct QEMU_PACKED AccelCmd {
@@ -232,7 +232,7 @@ struct AccelP2PPeer {
     uint16_t bdf;                       /* Bus:Device:Function (identifies peer) */
     PCIDevice *pci_dev;                 /* Peer PCI device pointer */
     AddressSpace *as;                   /* Peer's DMA address space */
-    MemoryRegion *bar2;                 /* Peer's BAR2 scratchpad memory region */
+    MemoryRegion *bar4;                 /* Peer's BAR4 scratchpad memory region */
 
     bool enabled;                       /* Peer is enabled and ready */
     uint32_t active_xfers;              /* Current active transfers to this peer */
@@ -247,7 +247,7 @@ struct AccelP2PPeer {
  * peer. The inbound SQ receives commands FROM the peer, while the receive CQ
  * gets completions FROM the peer (for commands we submitted to them).
  *
- * Queue data lives in BAR2 (RAM). Doorbells are in BAR0 (MMIO).
+ * Queue data lives in BAR4 (RAM). Doorbells are in BAR0 (MMIO).
  * Cross-device communication uses address_space_write() to peer BAR.
  */
 typedef struct AccelP2PQueuePair {
@@ -256,14 +256,14 @@ typedef struct AccelP2PQueuePair {
     uint16_t peer_bdf;                  /* Peer device BDF */
     bool     active;                    /* Slot is configured and active */
 
-    /* Inbound SQ state (peer submits commands TO us via our BAR2) */
+    /* Inbound SQ state (peer submits commands TO us via our BAR4) */
     struct {
         uint32_t head;                  /* Head pointer (we advance after reading) */
         uint32_t tail;                  /* Tail pointer (peer updates via doorbell) */
         uint32_t size;                  /* Queue size in entries */
     } isq;
 
-    /* Receive CQ state (peer writes completions TO us in our BAR2) */
+    /* Receive CQ state (peer writes completions TO us in our BAR4) */
     struct {
         uint32_t head;                  /* Head pointer (we advance after consuming) */
         uint32_t tail;                  /* Tail pointer (peer updates via doorbell) */
@@ -278,7 +278,7 @@ typedef struct AccelP2PQueuePair {
         uint8_t  cq_phase;              /* CQ phase for completions we write */
         uint8_t  our_slot;              /* Our slot index in peer's device */
         hwaddr   peer_bar0;             /* Peer's BAR0 physical address */
-        hwaddr   peer_bar2;             /* Peer's BAR2 physical address */
+        hwaddr   peer_bar4;             /* Peer's BAR4 physical address */
         AddressSpace *peer_as;          /* Peer's PCI address space */
         PCIDevice *peer_dev;            /* Peer PCI device pointer */
     } outbound;
@@ -297,8 +297,8 @@ struct PCIeAccel {
 
     /* Memory Regions */
     MemoryRegion bar0;                  /* Main register BAR (64KB) */
-    MemoryRegion bar2;                  /* P2P scratchpad RAM (256KB) */
-    MemoryRegion msix_bar;              /* MSI-X table/PBA BAR4 (16KB) */
+    MemoryRegion msix_bar;              /* MSI-X table/PBA BAR2 (16KB) */
+    MemoryRegion bar4;                  /* P2P scratchpad RAM (1TB) */
 
     /* Device Registers (in-memory representation of BAR0) */
     struct {

@@ -165,26 +165,26 @@ int accel_setup_p2p_peer(struct accel_dev *dev, u16 peer_bdf)
 #endif
 
 	/*
-	 * Map the peer's BAR2 (scratchpad memory) for P2P transfers.
-	 * This is where P2P data is stored. BAR2 is a RAM-backed region
+	 * Map the peer's BAR4 (scratchpad memory) for P2P transfers.
+	 * This is where P2P data is stored. BAR4 is a RAM-backed region
 	 * that can be directly accessed for peer-to-peer DMA operations.
 	 */
-	if (pci_resource_len(peer_pdev, 2) > 0) {
-		peer->mem = pci_iomap(peer_pdev, 2, 0);
+	if (pci_resource_len(peer_pdev, 4) > 0) {
+		peer->mem = pci_iomap(peer_pdev, 4, 0);
 		if (peer->mem) {
-			peer->mem_size = pci_resource_len(peer_pdev, 2);
-			peer->mem_phys = pci_resource_start(peer_pdev, 2);
+			peer->mem_size = pci_resource_len(peer_pdev, 4);
+			peer->mem_phys = pci_resource_start(peer_pdev, 4);
 			dev_info(&dev->pdev->dev,
-				"P2P: Mapped peer BAR2 scratchpad: %pR (phys=0x%llx)\n",
-				&peer_pdev->resource[2],
+				"P2P: Mapped peer BAR4 scratchpad: %pR (phys=0x%llx)\n",
+				&peer_pdev->resource[4],
 				(unsigned long long)peer->mem_phys);
 		} else {
 			dev_warn(&dev->pdev->dev,
-				"P2P: Failed to map peer BAR2\n");
+				"P2P: Failed to map peer BAR4\n");
 		}
 	} else {
 		dev_warn(&dev->pdev->dev,
-			"P2P: Peer has no BAR2 scratchpad memory\n");
+			"P2P: Peer has no BAR4 scratchpad memory\n");
 	}
 
 	/*
@@ -456,7 +456,7 @@ int accel_p2p_queue_setup(struct accel_dev *dev,
 	struct accel_cmd cmd = {};
 	struct accel_cqe cqe = {};
 	struct pci_dev *peer_pdev;
-	resource_size_t peer_bar0, peer_bar2;
+	resource_size_t peer_bar0, peer_bar4;
 	int ret;
 
 	if (params->slot >= ACCEL_P2Q_MAX_SLOTS ||
@@ -464,7 +464,7 @@ int accel_p2p_queue_setup(struct accel_dev *dev,
 		return -EINVAL;
 
 	/* If BAR addresses not provided, read from peer's PCI config */
-	if (params->peer_bar0 == 0 || params->peer_bar2 == 0) {
+	if (params->peer_bar0 == 0 || params->peer_bar4 == 0) {
 		peer_pdev = pci_get_domain_bus_and_slot(
 			pci_domain_nr(dev->pdev->bus),
 			(params->peer_bdf >> 8) & 0xFF,
@@ -478,10 +478,10 @@ int accel_p2p_queue_setup(struct accel_dev *dev,
 		}
 
 		peer_bar0 = pci_resource_start(peer_pdev, 0);
-		peer_bar2 = pci_resource_start(peer_pdev, 2);
+		peer_bar4 = pci_resource_start(peer_pdev, 4);
 		pci_dev_put(peer_pdev);
 
-		if (!peer_bar0 || !peer_bar2) {
+		if (!peer_bar0 || !peer_bar4) {
 			dev_err(&dev->pdev->dev,
 				"P2P queue: peer 0x%x BAR not mapped\n",
 				params->peer_bdf);
@@ -489,7 +489,7 @@ int accel_p2p_queue_setup(struct accel_dev *dev,
 		}
 	} else {
 		peer_bar0 = params->peer_bar0;
-		peer_bar2 = params->peer_bar2;
+		peer_bar4 = params->peer_bar4;
 	}
 
 	/* Build P2P queue setup admin command */
@@ -500,8 +500,8 @@ int accel_p2p_queue_setup(struct accel_dev *dev,
 		((params->peer_slot & 0xF) << 20));
 	cmd.dw.admin.cdw11 = cpu_to_le32(peer_bar0 & 0xFFFFFFFF);
 	cmd.dw.admin.cdw12 = cpu_to_le32((peer_bar0 >> 32) & 0xFFFFFFFF);
-	cmd.dw.admin.cdw13 = cpu_to_le32(peer_bar2 & 0xFFFFFFFF);
-	cmd.dw.admin.cdw14 = cpu_to_le32((peer_bar2 >> 32) & 0xFFFFFFFF);
+	cmd.dw.admin.cdw13 = cpu_to_le32(peer_bar4 & 0xFFFFFFFF);
+	cmd.dw.admin.cdw14 = cpu_to_le32((peer_bar4 >> 32) & 0xFFFFFFFF);
 
 	ret = accel_submit_admin_cmd(dev, &cmd, &cqe);
 	if (ret) {
@@ -513,9 +513,9 @@ int accel_p2p_queue_setup(struct accel_dev *dev,
 
 	dev_info(&dev->pdev->dev,
 		 "P2P queue setup: slot=%u peer=0x%x peer_slot=%u "
-		 "bar0=0x%llx bar2=0x%llx\n",
+		 "bar0=0x%llx bar4=0x%llx\n",
 		 params->slot, params->peer_bdf, params->peer_slot,
-		 (unsigned long long)peer_bar0, (unsigned long long)peer_bar2);
+		 (unsigned long long)peer_bar0, (unsigned long long)peer_bar4);
 
 	return 0;
 }
