@@ -25,72 +25,64 @@
 /*
  * 64-bit read-only register describing device capabilities.
  *
- * Bits [15:0]  - MQES: Maximum Queue Entries Supported
- *                0-based value (e.g., 0x3F = 64 entries, 0xFFF = 4096 entries)
- *                Reset: 0xFFF (4096 entries max)
- *
- * Bit [16]     - CQR: Contiguous Queues Required
- *                0 = Queues can be non-contiguous in physical memory
- *                1 = Queues must be physically contiguous
- *                Reset: 0 (non-contiguous supported)
- *
- * Bits [23:17] - Reserved (must be 0)
- *
- * Bits [31:24] - TO: Timeout
- *                Controller ready timeout in 500ms units
- *                0 = no timeout, >0 = timeout value
- *                Reset: 0x01 (500ms)
- *
- * Bits [35:32] - DSTRD: Doorbell Stride
- *                Doorbell stride = 2^(2 + DSTRD) bytes
- *                0 = 4 bytes, 1 = 8 bytes, etc.
- *                Reset: 0 (4 bytes stride)
- *
- * Bit [36]     - P2P: Peer-to-Peer DMA Supported
- *                0 = P2P not supported
- *                1 = P2P DMA supported
- *                Reset: 1 (supported)
- *
- * Bit [37]     - SVA: Shared Virtual Addressing Supported
- *                0 = PASID/SVA not supported
- *                1 = PASID/SVA supported via PCIe capability
- *                Reset: 1 (supported)
- *
- * Bit [38]     - P2Q: P2P MMIO Queues Supported
+ * Bit [0]     - P2P: Peer-to-Peer MMIO Queues Supported
  *                0 = P2P MMIO queues not supported
  *                1 = Device supports P2P MMIO queues
  *                Reset: 1 (supported)
  *
- * Bits [47:39] - Reserved (must be 0)
+ * Bit [1]     - SVA: Shared Virtual Addressing Supported
+ *                0 = PASID/SVA not supported
+ *                1 = PASID/SVA supported via PCIe capability
+ *                Reset: 1 (supported)
  *
- * Bits [51:48] - MPSMIN: Memory Page Size Minimum
- *                Minimum host memory page size = 2^(12 + MPSMIN) bytes
- *                0 = 4KB, 1 = 8KB, 2 = 16KB, etc.
- *                Reset: 0 (4KB minimum)
+ * Bit [2]     - PRPL: PRPL DMA supported
+ *                0 = PRPL DMA not supported
+ *                1 = PRPL DMA supported
+ *                Reset: 1 (supported)
  *
- * Bits [55:52] - MPSMAX: Memory Page Size Maximum
- *                Maximum host memory page size = 2^(12 + MPSMAX) bytes
- *                0 = 4KB, 1 = 8KB, 2 = 16KB, etc.
- *                Reset: 8 (1MB maximum)
+ * Bit [3]     - SGL: SGL DMA supported
+ *                0 = SGL DMA not supported
+ *                1 = SGL DMA supported
+ *                Reset: 1 (supported)
  *
- * Bits [63:56] - Reserved (must be 0)
+ * Bits [7:4]  - P2P_CH_BS: P2P Channel Buffer Size
+ *                Value N represent power of 2. 2^N x 4096B
+ *                Reset: 0xC (4096B)
+ * 
+ * Bits [11:8]  - SQS: host SQ entry size
+ *                Value N represent power of 2. 2^N
+ *                Reset: 0x6 (64B)
+ * 
+ * Bits [15:12]  - CQS: host CQ entry size
+ *                Value N represent power of 2. 2^N
+ *                Reset: 0x4 (16B)
+ * 
+ * Bits [19:16]  - DEPTH: host SQ/CQ entry count
+ *                Value N represent power of 2. 2^N
+ *                Reset: 0x4 (16B)
+ * 
+ * Bits [23:20]  - MAXQ: host CQ/SQ pair count
+ *                Value N represent power of 2. 2^N
+ *                Reset: 0x4 (16B)
+ * 
+ * Bits [63:24] - Reserved (must be 0)
  */
 #define ACCEL_REG_CAP       0x0000
 
-#define ACCEL_CAP_MQES_SHIFT    0
-#define ACCEL_CAP_MQES_MASK     0xFFFF
-#define ACCEL_CAP_CQR_SHIFT     16
-#define ACCEL_CAP_TO_SHIFT      24
-#define ACCEL_CAP_TO_MASK       0xFF
-#define ACCEL_CAP_DSTRD_SHIFT   32
-#define ACCEL_CAP_DSTRD_MASK    0xF
-#define ACCEL_CAP_P2P_SHIFT     36
-#define ACCEL_CAP_SVA_SHIFT     37
-#define ACCEL_CAP_P2Q_SHIFT     38
-#define ACCEL_CAP_MPSMIN_SHIFT  48
-#define ACCEL_CAP_MPSMIN_MASK   0xF
-#define ACCEL_CAP_MPSMAX_SHIFT  52
-#define ACCEL_CAP_MPSMAX_MASK   0xF
+#define ACCEL_CAP_P2P_SHIFT         0
+#define ACCEL_CAP_SVA_SHIFT         1
+#define ACCEL_CAP_PRPL_SHIFT        2
+#define ACCEL_CAP_SGL_SHIFT         3
+#define ACCEL_CAP_P2P_CH_BS_SHIFT   4
+#define ACCEL_CAP_P2P_CH_BS_MASK    0xF
+#define ACCEL_CAP_SQS_SHIFT         8
+#define ACCEL_CAP_SQS_MASK          0xF
+#define ACCEL_CAP_CQS_SHIFT         12
+#define ACCEL_CAP_CQS_MASK          0xF
+#define ACCEL_CAP_DEPTH_SHIFT       16
+#define ACCEL_CAP_DEPTH_MASK        0xF
+#define ACCEL_CAP_MAXQ_SHIFT        20
+#define ACCEL_CAP_MAXQ_MASK         0xF
 
 /* ===== Version Register (VS) - Offset 0x0008 ===== */
 /*
@@ -147,8 +139,7 @@
  *
  * Bits [13:12] - MPS: Memory Page Size
  *                Host page size = 2^(12 + MPS) bytes
- *                0 = 4KB, 1 = 8KB, 2 = 16KB, 3 = 32KB, etc.
- *                Must be between MPSMIN and MPSMAX from CAP register
+ *                0 = 4KB, 1 = 8KB, 2 = 16KB, 3 = 32KB
  *                Reset: 0 (4KB)
  *
  * Bits [31:14] - Reserved (must be 0)

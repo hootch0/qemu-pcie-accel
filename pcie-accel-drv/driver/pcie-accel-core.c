@@ -457,18 +457,8 @@ void accel_free_admin_queue(struct accel_dev *dev)
 int accel_enable_ctrl(struct accel_dev *dev)
 {
 	u32 cc;
-	u64 cap;
-	u32 timeout_ms;
+	u32 timeout_ms = 5000;  /* 5 seconds */
 	int ret;
-
-	/*
-	 * Read capability register for timeout value.
-	 * CAP[31:24]: TO - Timeout in 500ms units
-	 */
-	cap = accel_reg_read64(dev, ACCEL_REG_CAP);
-	timeout_ms = ((cap >> 24) & 0xFF) * 500;
-	if (timeout_ms == 0)
-		timeout_ms = 5000;  /* Default 5 seconds */
 
 	/*
 	 * Set controller configuration:

@@ -1538,14 +1538,15 @@ void pcie_accel_realize(PCIDevice *pci_dev, Error **errp)
     msix_vector_use(pci_dev, 0);
 
     /* Initialize capability register */
-    n->bar.cap = ((ACCEL_MAX_QUEUE_ENTRIES - 1) << ACCEL_CAP_MQES_SHIFT) |
-                 (1ULL << ACCEL_CAP_TO_SHIFT) |      /* Timeout */
-                 (0ULL << ACCEL_CAP_DSTRD_SHIFT) |   /* 4-byte stride */
-                 (1ULL << ACCEL_CAP_P2P_SHIFT) |
-                 (1ULL << ACCEL_CAP_SVA_SHIFT) |
-                 (1ULL << ACCEL_CAP_P2Q_SHIFT) |     /* P2P MMIO queues */
-                 (0ULL << ACCEL_CAP_MPSMIN_SHIFT) |  /* 4KB min */
-                 (8ULL << ACCEL_CAP_MPSMAX_SHIFT);   /* 1MB max */
+    n->bar.cap = (1ULL << ACCEL_CAP_P2P_SHIFT) |          /* P2P MMIO queues */
+                 (1ULL << ACCEL_CAP_SVA_SHIFT) |           /* PASID/SVA */
+                 (1ULL << ACCEL_CAP_PRPL_SHIFT) |          /* PRPL DMA */
+                 (1ULL << ACCEL_CAP_SGL_SHIFT) |           /* SGL DMA */
+                 (0xCULL << ACCEL_CAP_P2P_CH_BS_SHIFT) |  /* 4KB channel buf */
+                 ((uint64_t)ACCEL_SQES << ACCEL_CAP_SQS_SHIFT) |   /* 64B SQE */
+                 ((uint64_t)ACCEL_CQES << ACCEL_CAP_CQS_SHIFT) |   /* 16B CQE */
+                 (12ULL << ACCEL_CAP_DEPTH_SHIFT) |        /* 2^12=4096 entries */
+                 (8ULL << ACCEL_CAP_MAXQ_SHIFT);           /* 2^8=256 pairs */
 
     /* Initialize version register */
     n->bar.vs = 0x00010000;  /* Version 1.0.0 */
