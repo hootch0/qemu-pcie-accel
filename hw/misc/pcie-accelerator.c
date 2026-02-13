@@ -1477,7 +1477,7 @@ void pcie_accel_realize(PCIDevice *pci_dev, Error **errp)
 
     /* Initialize CMB offset and size registers */
     n->bar.cmboff = ACCEL_P2Q_DATA_OFFSET;
-    n->bar.cmbsz = ACCEL_BAR4_SIZE - ACCEL_P2Q_DATA_OFFSET;
+    n->bar.cmbsz = ACCEL_BAR4_SIZE;
 
     /* Initialize P2P Queue configuration */
     uint32_t p2q_data_mb = (ACCEL_BAR4_SIZE - ACCEL_P2Q_DATA_OFFSET) / (1ULL << 20);

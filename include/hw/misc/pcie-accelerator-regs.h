@@ -214,7 +214,7 @@
  * Memory Buffer (CMB) in bytes.
  *
  * Bits [31:0]  - SIZE: CMB size in bytes
- *                Reset: ACCEL_BAR4_SIZE - ACCEL_P2Q_DATA_OFFSET
+ *                Reset: ACCEL_BAR4_SIZE
  */
 #define ACCEL_REG_CMBSZ     0x0024
 
