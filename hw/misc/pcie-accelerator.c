@@ -161,26 +161,7 @@ void accel_set_ctrl_fatal(PCIeAccel *n)
  */
 
 /**
- * accel_irq_check - Check and update legacy INTx interrupt status
- * @n: Device state
- *
- * Only used for legacy INTx interrupts. MSI-X uses direct notification.
- */
-void accel_irq_check(PCIeAccel *n)
-{
-    PCIDevice *pci = PCI_DEVICE(n);
-
-    if (!msix_enabled(pci) && !msi_enabled(pci)) {
-        if (n->irq_status) {
-            pci_set_irq(pci, 1);
-        } else {
-            pci_set_irq(pci, 0);
-        }
-    }
-}
-
-/**
- * accel_irq_assert - Assert interrupt for a completion queue
+ * accel_irq_assert - Assert interrupt for a completion queue (MSI/MSI-X only)
  * @n: Device state
  * @cq: Completion queue
  *
@@ -211,29 +192,17 @@ void accel_irq_assert(PCIeAccel *n, AccelCQueue *cq)
 
     if (fire_irq) {
         if (msix_enabled(pci)) {
-            /* MSI-X: Direct vector notification */
             qemu_log_mask(LOG_UNIMP,
                           "pcie-accel: MSI-X notify: cqid=%u vector=%u\n",
                           cq->cqid, cq->vector);
             trace_pcie_accel_irq_assert(cq->cqid, cq->vector);
             msix_notify(pci, cq->vector);
         } else if (msi_enabled(pci)) {
-            /* MSI: Use vector as index */
             qemu_log_mask(LOG_UNIMP,
                           "pcie-accel: MSI notify: cqid=%u vector=%u\n",
                           cq->cqid, cq->vector);
             MSIMessage msg = msi_get_message(pci, cq->vector);
             pci_dma_write(pci, msg.address, &msg.data, sizeof(msg.data));
-        } else {
-            /* Legacy INTx */
-            qemu_log_mask(LOG_UNIMP,
-                          "pcie-accel: INTx assert: cqid=%u\n", cq->cqid);
-            n->irq_status |= (1 << cq->vector);
-            accel_irq_check(n);
-        }
-
-        if (!pending) {
-            n->cq_pending++;
         }
     }
 }
@@ -243,33 +212,15 @@ void accel_irq_assert(PCIeAccel *n, AccelCQueue *cq)
  * @n: Device state
  * @cq: Completion queue
  *
- * Called when CQ becomes empty (head == tail).
+ * MSI/MSI-X are edge-triggered, so deassert is a no-op.
  */
 void accel_irq_deassert(PCIeAccel *n, AccelCQueue *cq)
 {
-    PCIDevice *pci = PCI_DEVICE(n);
-
-    qemu_log_mask(LOG_UNIMP,
-                  "pcie-accel: irq_deassert called: cqid=%u head=%u tail=%u irq_en=%d\n",
-                  cq->cqid, cq->head, cq->tail, cq->irq_enabled);
-
     if (!cq->irq_enabled) {
         return;
     }
 
-    if (msix_enabled(pci)) {
-        /* MSI-X is edge-triggered, no explicit deassert */
-        trace_pcie_accel_irq_deassert(cq->cqid);
-    } else {
-        /* Legacy INTx: Clear status bit */
-        if (n->cq_pending > 0) {
-            n->cq_pending--;
-        }
-        if (n->cq_pending == 0) {
-            n->irq_status &= ~(1 << cq->vector);
-            accel_irq_check(n);
-        }
-    }
+    trace_pcie_accel_irq_deassert(cq->cqid);
 }
 
 /*
@@ -620,8 +571,8 @@ uint16_t accel_cmd_identify(PCIeAccel *n, AccelRequest *req)
      * Offset 20-23: PASID width (0 if disabled)
      */
 
-    /* Version */
-    *(uint32_t *)(buf + 0) = cpu_to_le32(n->bar.vs);
+    /* Version (1.0.0) */
+    *(uint32_t *)(buf + 0) = cpu_to_le32(0x00010000);
 
     /* Queue capabilities */
     *(uint32_t *)(buf + 4) = cpu_to_le32(n->max_ioqpairs);
@@ -1101,14 +1052,6 @@ static uint64_t accel_mmio_read(void *opaque, hwaddr addr, unsigned size)
         val = n->bar.cap;
         break;
 
-    case ACCEL_REG_VS:
-        val = n->bar.vs;
-        break;
-
-    case ACCEL_REG_INTMS:
-        val = n->bar.intms;
-        break;
-
     case ACCEL_REG_CC:
         val = n->bar.cc;
         break;
@@ -1117,16 +1060,20 @@ static uint64_t accel_mmio_read(void *opaque, hwaddr addr, unsigned size)
         val = n->bar.csts;
         break;
 
-    case ACCEL_REG_AQA:
-        val = n->bar.aqa;
-        break;
-
     case ACCEL_REG_ASQ:
         val = n->bar.asq;
         break;
 
     case ACCEL_REG_ACQ:
         val = n->bar.acq;
+        break;
+
+    case ACCEL_REG_CMBOFF:
+        val = n->bar.cmboff;
+        break;
+
+    case ACCEL_REG_CMBSZ:
+        val = n->bar.cmbsz;
         break;
 
     case ACCEL_REG_P2PCFG:
@@ -1189,16 +1136,6 @@ static void accel_mmio_write(void *opaque, hwaddr addr, uint64_t data,
     }
 
     switch (addr) {
-    case ACCEL_REG_INTMS:
-        n->bar.intms |= data;
-        accel_irq_check(n);
-        break;
-
-    case ACCEL_REG_INTMC:
-        n->bar.intms &= ~data;
-        accel_irq_check(n);
-        break;
-
     case ACCEL_REG_CC:
         n->bar.cc = data;
         /* Handle enable/disable */
@@ -1206,8 +1143,7 @@ static void accel_mmio_write(void *opaque, hwaddr addr, uint64_t data,
             /* Enable controller */
             if (!(n->bar.csts & (1 << ACCEL_CSTS_RDY_SHIFT))) {
                 /* Initialize admin queues if configured */
-                if (n->bar.asq && n->bar.acq && n->bar.aqa) {
-                    /* Admin queues already initialized in realize */
+                if (n->bar.asq && n->bar.acq) {
                     accel_set_ctrl_ready(n, true);
                 }
             }
@@ -1217,27 +1153,17 @@ static void accel_mmio_write(void *opaque, hwaddr addr, uint64_t data,
         }
         break;
 
-    case ACCEL_REG_AQA:
-        if (n->bar.csts & (1 << ACCEL_CSTS_RDY_SHIFT)) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "pcie-accel: Cannot modify AQA while controller ready\n");
-        } else {
-            n->bar.aqa = data;
-        }
-        break;
-
     case ACCEL_REG_ASQ:
         if (n->bar.csts & (1 << ACCEL_CSTS_RDY_SHIFT)) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "pcie-accel: Cannot modify ASQ while controller ready\n");
         } else {
             n->bar.asq = data;
-            /* Initialize admin SQ */
-            uint16_t asqs = (n->bar.aqa & ACCEL_AQA_ASQS_MASK) + 1;
             qemu_log_mask(LOG_UNIMP,
-                          "pcie-accel: ASQ=0x%" PRIx64 " size=%u (AQA=0x%x)\n",
-                          data, asqs, n->bar.aqa);
-            accel_init_sq(&n->admin_sq, n, data, 0, 0, asqs);
+                          "pcie-accel: ASQ=0x%" PRIx64 " size=%u\n",
+                          data, ACCEL_ADMIN_QUEUE_SIZE);
+            accel_init_sq(&n->admin_sq, n, data, 0, 0,
+                          ACCEL_ADMIN_QUEUE_SIZE);
             /* Link admin SQ to sq[0] for doorbell dispatch */
             n->sq[0] = &n->admin_sq;
         }
@@ -1249,12 +1175,11 @@ static void accel_mmio_write(void *opaque, hwaddr addr, uint64_t data,
                           "pcie-accel: Cannot modify ACQ while controller ready\n");
         } else {
             n->bar.acq = data;
-            /* Initialize admin CQ */
-            uint16_t acqs = ((n->bar.aqa >> 16) & ACCEL_AQA_ACQS_MASK) + 1;
             qemu_log_mask(LOG_UNIMP,
                           "pcie-accel: ACQ=0x%" PRIx64 " size=%u\n",
-                          data, acqs);
-            accel_init_cq(&n->admin_cq, n, data, 0, 0, acqs, 1);
+                          data, ACCEL_ADMIN_QUEUE_SIZE);
+            accel_init_cq(&n->admin_cq, n, data, 0, 0,
+                          ACCEL_ADMIN_QUEUE_SIZE, 1);
             /* Link admin CQ to cq[0] for doorbell dispatch */
             n->cq[0] = &n->admin_cq;
         }
@@ -1267,8 +1192,9 @@ static void accel_mmio_write(void *opaque, hwaddr addr, uint64_t data,
         break;
 
     case ACCEL_REG_CAP:
-    case ACCEL_REG_VS:
     case ACCEL_REG_CSTS:
+    case ACCEL_REG_CMBOFF:
+    case ACCEL_REG_CMBSZ:
     case ACCEL_REG_P2PCFG:
     case ACCEL_REG_P2QQCFG:
     case ACCEL_REG_DEVSTAT:
@@ -1444,7 +1370,6 @@ void pcie_accel_reset(DeviceState *dev)
                 (ACCEL_CQES << ACCEL_CC_IOCQES_SHIFT);
 
     /* Reset admin queues */
-    n->bar.aqa = 0;
     n->bar.asq = 0;
     n->bar.acq = 0;
 
@@ -1510,11 +1435,9 @@ void pcie_accel_realize(PCIDevice *pci_dev, Error **errp)
                      PCI_BASE_ADDRESS_MEM_TYPE_32,
                      &n->msix_bar);
 
-    /* Initialize BAR4 (P2P scratchpad RAM - sparse file-backed) */
-    memory_region_init_ram_from_file(&n->bar4, OBJECT(n), "pcie-accel-bar4",
-                                     ACCEL_BAR4_SIZE, 0,
-                                     RAM_SHARED | RAM_NORESERVE,
-                                     "/tmp", 0, &local_err);
+    /* Initialize BAR4 (P2P queues + CMB RAM) */
+    memory_region_init_ram(&n->bar4, OBJECT(n), "pcie-accel-bar4",
+                           ACCEL_BAR4_SIZE, &local_err);
     if (local_err) {
         error_propagate(errp, local_err);
         return;
@@ -1548,18 +1471,19 @@ void pcie_accel_realize(PCIDevice *pci_dev, Error **errp)
                  (12ULL << ACCEL_CAP_DEPTH_SHIFT) |        /* 2^12=4096 entries */
                  (8ULL << ACCEL_CAP_MAXQ_SHIFT);           /* 2^8=256 pairs */
 
-    /* Initialize version register */
-    n->bar.vs = 0x00010000;  /* Version 1.0.0 */
-
     /* Initialize P2P configuration */
     n->bar.p2pcfg = (n->p2p.max_peers << ACCEL_P2PCFG_MAX_DEVICES_SHIFT) |
                     (n->p2p.max_xfers_per_peer << ACCEL_P2PCFG_MAX_XFERS_SHIFT);
 
+    /* Initialize CMB offset and size registers */
+    n->bar.cmboff = ACCEL_P2Q_DATA_OFFSET;
+    n->bar.cmbsz = ACCEL_BAR4_SIZE - ACCEL_P2Q_DATA_OFFSET;
+
     /* Initialize P2P Queue configuration */
-    uint32_t p2q_data_gb = (ACCEL_BAR4_SIZE - ACCEL_P2Q_DATA_OFFSET) / (1ULL << 30);
+    uint32_t p2q_data_mb = (ACCEL_BAR4_SIZE - ACCEL_P2Q_DATA_OFFSET) / (1ULL << 20);
     n->p2p.p2qqcfg = (ACCEL_P2Q_MAX_SLOTS << ACCEL_P2QQCFG_SLOTS_SHIFT) |
                      (ACCEL_P2Q_SQ_ENTRIES << ACCEL_P2QQCFG_SIZE_SHIFT) |
-                     (p2q_data_gb << ACCEL_P2QQCFG_DATA_SIZE_SHIFT);
+                     (p2q_data_mb << ACCEL_P2QQCFG_DATA_SIZE_SHIFT);
 
     /* Initialize page size */
     n->page_size = 4096;

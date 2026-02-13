@@ -232,7 +232,7 @@ struct AccelP2PPeer {
     uint16_t bdf;                       /* Bus:Device:Function (identifies peer) */
     PCIDevice *pci_dev;                 /* Peer PCI device pointer */
     AddressSpace *as;                   /* Peer's DMA address space */
-    MemoryRegion *bar4;                 /* Peer's BAR4 scratchpad memory region */
+    MemoryRegion *bar4;                 /* Peer's BAR4 CMB memory region */
 
     bool enabled;                       /* Peer is enabled and ready */
     uint32_t active_xfers;              /* Current active transfers to this peer */
@@ -298,19 +298,17 @@ struct PCIeAccel {
     /* Memory Regions */
     MemoryRegion bar0;                  /* Main register BAR (64KB) */
     MemoryRegion msix_bar;              /* MSI-X table/PBA BAR2 (16KB) */
-    MemoryRegion bar4;                  /* P2P scratchpad RAM (1TB) */
+    MemoryRegion bar4;                  /* P2P queues + CMB (64MB) */
 
     /* Device Registers (in-memory representation of BAR0) */
     struct {
         uint64_t cap;                   /* Capability register */
-        uint32_t vs;                    /* Version register */
-        uint32_t intms;                 /* Interrupt mask set */
-        uint32_t intmc;                 /* Interrupt mask clear */
         uint32_t cc;                    /* Configuration */
         uint32_t csts;                  /* Status */
-        uint32_t aqa;                   /* Admin queue attributes */
         uint64_t asq;                   /* Admin SQ base address */
         uint64_t acq;                   /* Admin CQ base address */
+        uint32_t cmboff;                /* CMB offset within BAR4 */
+        uint32_t cmbsz;                 /* CMB size in bytes */
         uint32_t p2pcfg;                /* P2P configuration */
         uint32_t intcoal;               /* Interrupt coalescing */
         uint32_t devstat;               /* Device status */
@@ -325,10 +323,6 @@ struct PCIeAccel {
 
     AccelSQueue admin_sq;               /* Admin submission queue (sqid=0) */
     AccelCQueue admin_cq;               /* Admin completion queue (cqid=0) */
-
-    /* Interrupt Management */
-    int cq_pending;                     /* Number of CQs with pending interrupts */
-    uint32_t irq_status;                /* IRQ status for legacy INTx */
 
     /* Interrupt Coalescing Parameters */
     uint8_t intcoal_thresh;             /* Completion threshold */
@@ -372,7 +366,7 @@ struct PCIeAccel {
 
     /* Device Properties (from QEMU command line) */
     char *serial;                       /* Serial number */
-    uint32_t cmb_size_mb;               /* Controller Memory Buffer size (unused) */
+    uint32_t cmb_size_mb;               /* Controller Memory Buffer size in MB */
 };
 
 /*
@@ -471,10 +465,9 @@ void accel_process_sq(void *opaque);
 void accel_post_cqes(void *opaque);
 void accel_enqueue_req_completion(AccelCQueue *cq, AccelRequest *req);
 
-/* Interrupt handling */
+/* Interrupt handling (MSI/MSI-X only) */
 void accel_irq_assert(PCIeAccel *n, AccelCQueue *cq);
 void accel_irq_deassert(PCIeAccel *n, AccelCQueue *cq);
-void accel_irq_check(PCIeAccel *n);
 
 /* Admin command handlers */
 uint16_t accel_admin_cmd(PCIeAccel *n, AccelRequest *req);

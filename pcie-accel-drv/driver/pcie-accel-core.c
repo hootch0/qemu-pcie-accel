@@ -292,7 +292,6 @@ void accel_free_msix(struct accel_dev *dev)
 int accel_init_admin_queue(struct accel_dev *dev)
 {
 	struct accel_queue *queue;
-	u32 aqa;
 	int ret;
 
 	queue = kzalloc(sizeof(*queue), GFP_KERNEL);
@@ -346,15 +345,6 @@ int accel_init_admin_queue(struct accel_dev *dev)
 	/* Clear queue buffers - important for phase bit detection */
 	memset(queue->sq_buffer, 0, queue->sq_size * ACCEL_SQE_SIZE);
 	memset(queue->cq_buffer, 0, queue->cq_size * ACCEL_CQE_SIZE);
-
-	/*
-	 * Configure admin queue attributes register.
-	 * AQA[11:0]  = ASQS (admin SQ size - 1, 0-based)
-	 * AQA[27:16] = ACQS (admin CQ size - 1, 0-based)
-	 */
-	aqa = ((queue->sq_size - 1) & 0xFFF) |
-	      (((queue->cq_size - 1) & 0xFFF) << 16);
-	accel_reg_write32(dev, ACCEL_REG_AQA, aqa);
 
 	/* Set admin queue base addresses (64-bit DMA addresses) */
 	accel_reg_write64(dev, ACCEL_REG_ASQ, queue->sq_dma_addr);
@@ -595,7 +585,7 @@ static int accel_pci_probe(struct pci_dev *pdev,
 		goto err_release_regions;
 	}
 
-	/* Map BAR4 (P2P queues + data) if present */
+	/* Map BAR4 (P2P queues + CMB) if present */
 	if (pci_resource_len(pdev, 4)) {
 		dev->bar4 = pci_iomap(pdev, 4, 0);
 		if (!dev->bar4) {
@@ -608,14 +598,10 @@ static int accel_pci_probe(struct pci_dev *pdev,
 		}
 	}
 
-	/* Log device version and capabilities */
+	/* Log device capabilities */
 	{
-		u32 vs = accel_reg_read32(dev, ACCEL_REG_VS);
 		u64 cap = accel_reg_read64(dev, ACCEL_REG_CAP);
-		dev_info(&pdev->dev,
-			 "Device version %u.%u.%u, CAP=0x%016llx\n",
-			 (vs >> 16) & 0xFFFF, (vs >> 8) & 0xFF, vs & 0xFF,
-			 cap);
+		dev_info(&pdev->dev, "CAP=0x%016llx\n", cap);
 	}
 
 	/* Set up MSI-X interrupts for per-queue completion notification */

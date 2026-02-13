@@ -165,7 +165,7 @@ int accel_setup_p2p_peer(struct accel_dev *dev, u16 peer_bdf)
 #endif
 
 	/*
-	 * Map the peer's BAR4 (scratchpad memory) for P2P transfers.
+	 * Map the peer's BAR4 (CMB) for P2P transfers.
 	 * This is where P2P data is stored. BAR4 is a RAM-backed region
 	 * that can be directly accessed for peer-to-peer DMA operations.
 	 */
@@ -175,7 +175,7 @@ int accel_setup_p2p_peer(struct accel_dev *dev, u16 peer_bdf)
 			peer->mem_size = pci_resource_len(peer_pdev, 4);
 			peer->mem_phys = pci_resource_start(peer_pdev, 4);
 			dev_info(&dev->pdev->dev,
-				"P2P: Mapped peer BAR4 scratchpad: %pR (phys=0x%llx)\n",
+				"P2P: Mapped peer BAR4 CMB: %pR (phys=0x%llx)\n",
 				&peer_pdev->resource[4],
 				(unsigned long long)peer->mem_phys);
 		} else {
@@ -184,7 +184,7 @@ int accel_setup_p2p_peer(struct accel_dev *dev, u16 peer_bdf)
 		}
 	} else {
 		dev_warn(&dev->pdev->dev,
-			"P2P: Peer has no BAR4 scratchpad memory\n");
+			"P2P: Peer has no BAR4 CMB memory\n");
 	}
 
 	/*

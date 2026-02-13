@@ -84,39 +84,7 @@
 #define ACCEL_CAP_MAXQ_SHIFT        20
 #define ACCEL_CAP_MAXQ_MASK         0xF
 
-/* ===== Version Register (VS) - Offset 0x0008 ===== */
-/*
- * 32-bit read-only register indicating device version.
- *
- * Bits [7:0]   - TER: Tertiary Version Number
- * Bits [15:8]  - MNR: Minor Version Number
- * Bits [31:16] - MJR: Major Version Number
- *
- * Reset: 0x00010000 (version 1.0.0)
- */
-#define ACCEL_REG_VS        0x0008
-#define ACCEL_VS_TER_SHIFT  0
-#define ACCEL_VS_MNR_SHIFT  8
-#define ACCEL_VS_MJR_SHIFT  16
-
-/* ===== Interrupt Mask Set Register (INTMS) - Offset 0x000C ===== */
-/*
- * 32-bit read/write register for masking interrupts.
- * Write 1 to bit N to mask interrupt vector N.
- * Only applies to legacy INTx interrupts (MSI-X uses per-vector masking).
- *
- * Reset: 0x00000000 (all unmasked)
- */
-#define ACCEL_REG_INTMS     0x000C
-
-/* ===== Interrupt Mask Clear Register (INTMC) - Offset 0x0010 ===== */
-/*
- * 32-bit write-only register for unmasking interrupts.
- * Write 1 to bit N to unmask interrupt vector N.
- */
-#define ACCEL_REG_INTMC     0x0010
-
-/* ===== Controller Configuration Register (CC) - Offset 0x0014 ===== */
+/* ===== Controller Configuration Register (CC) - Offset 0x0008 ===== */
 /*
  * 32-bit read/write register for controller configuration.
  *
@@ -144,7 +112,7 @@
  *
  * Bits [31:14] - Reserved (must be 0)
  */
-#define ACCEL_REG_CC        0x0014
+#define ACCEL_REG_CC        0x0008
 
 #define ACCEL_CC_EN_SHIFT       0
 #define ACCEL_CC_EN_MASK        0x1
@@ -159,7 +127,7 @@
 #define ACCEL_SQES          6   /* 2^6 = 64 bytes */
 #define ACCEL_CQES          4   /* 2^4 = 16 bytes */
 
-/* ===== Controller Status Register (CSTS) - Offset 0x001C ===== */
+/* ===== Controller Status Register (CSTS) - Offset 0x000C ===== */
 /*
  * 32-bit read-only register indicating controller status.
  *
@@ -190,7 +158,7 @@
  *
  * Bits [31:6]  - Reserved (must be 0)
  */
-#define ACCEL_REG_CSTS      0x001C
+#define ACCEL_REG_CSTS      0x000C
 
 #define ACCEL_CSTS_RDY_SHIFT    0
 #define ACCEL_CSTS_RDY_MASK     0x1
@@ -206,32 +174,7 @@
 #define ACCEL_CSTS_SHST_OCCURRING 0x1
 #define ACCEL_CSTS_SHST_COMPLETE 0x2
 
-/* ===== Admin Queue Attributes Register (AQA) - Offset 0x0024 ===== */
-/*
- * 32-bit read/write register defining admin queue sizes.
- *
- * Bits [11:0]  - ASQS: Admin Submission Queue Size
- *                0-based value (e.g., 0x3F = 64 entries)
- *                Minimum: 1 (2 entries), Maximum: MQES from CAP
- *                Reset: 0
- *
- * Bits [15:12] - Reserved (must be 0)
- *
- * Bits [27:16] - ACQS: Admin Completion Queue Size
- *                0-based value (e.g., 0x3F = 64 entries)
- *                Minimum: 1 (2 entries), Maximum: MQES from CAP
- *                Reset: 0
- *
- * Bits [31:28] - Reserved (must be 0)
- */
-#define ACCEL_REG_AQA       0x0024
-
-#define ACCEL_AQA_ASQS_SHIFT    0
-#define ACCEL_AQA_ASQS_MASK     0xFFF
-#define ACCEL_AQA_ACQS_SHIFT    16
-#define ACCEL_AQA_ACQS_MASK     0xFFF
-
-/* ===== Admin Submission Queue Base Address (ASQ) - Offset 0x0028 ===== */
+/* ===== Admin Submission Queue Base Address (ASQ) - Offset 0x0010 ===== */
 /*
  * 64-bit read/write register specifying admin SQ base address.
  *
@@ -241,9 +184,9 @@
  *                Must be aligned to host page size (MPS)
  *                Reset: 0
  */
-#define ACCEL_REG_ASQ       0x0028
+#define ACCEL_REG_ASQ       0x0010
 
-/* ===== Admin Completion Queue Base Address (ACQ) - Offset 0x0030 ===== */
+/* ===== Admin Completion Queue Base Address (ACQ) - Offset 0x0018 ===== */
 /*
  * 64-bit read/write register specifying admin CQ base address.
  *
@@ -253,9 +196,29 @@
  *                Must be aligned to host page size (MPS)
  *                Reset: 0
  */
-#define ACCEL_REG_ACQ       0x0030
+#define ACCEL_REG_ACQ       0x0018
 
-/* ===== P2P Configuration Register (P2PCFG) - Offset 0x0040 ===== */
+/* ===== CMB Offset Register (CMBOFF) - Offset 0x0020 ===== */
+/*
+ * 32-bit read-only register indicating the byte offset of the Controller
+ * Memory Buffer (CMB) within BAR4.
+ *
+ * Bits [31:0]  - OFFSET: CMB byte offset within BAR4
+ *                Reset: ACCEL_P2Q_DATA_OFFSET (0xC000)
+ */
+#define ACCEL_REG_CMBOFF    0x0020
+
+/* ===== CMB Size Register (CMBSZ) - Offset 0x0024 ===== */
+/*
+ * 32-bit read-only register indicating the size of the Controller
+ * Memory Buffer (CMB) in bytes.
+ *
+ * Bits [31:0]  - SIZE: CMB size in bytes
+ *                Reset: ACCEL_BAR4_SIZE - ACCEL_P2Q_DATA_OFFSET
+ */
+#define ACCEL_REG_CMBSZ     0x0024
+
+/* ===== P2P Configuration Register (P2PCFG) - Offset 0x0028 ===== */
 /*
  * 32-bit read-only register describing P2P DMA capabilities.
  *
@@ -274,7 +237,7 @@
  *
  * Bits [31:17] - Reserved (must be 0)
  */
-#define ACCEL_REG_P2PCFG    0x0040
+#define ACCEL_REG_P2PCFG    0x0028
 
 #define ACCEL_P2PCFG_MAX_DEVICES_SHIFT  0
 #define ACCEL_P2PCFG_MAX_DEVICES_MASK   0xFF
@@ -286,7 +249,7 @@
 #define ACCEL_MAX_P2P_PEERS     32
 #define ACCEL_MAX_P2P_XFERS     64
 
-/* ===== Interrupt Coalescing Configuration (INTCOAL) - Offset 0x0048 ===== */
+/* ===== Interrupt Coalescing Configuration (INTCOAL) - Offset 0x002C ===== */
 /*
  * 32-bit read/write register for interrupt coalescing parameters.
  *
@@ -304,14 +267,14 @@
  *
  * Bits [31:16] - Reserved (must be 0)
  */
-#define ACCEL_REG_INTCOAL   0x0050
+#define ACCEL_REG_INTCOAL   0x002C
 
 #define ACCEL_INTCOAL_THRESH_SHIFT  0
 #define ACCEL_INTCOAL_THRESH_MASK   0xFF
 #define ACCEL_INTCOAL_TIME_SHIFT    8
 #define ACCEL_INTCOAL_TIME_MASK     0xFF
 
-/* ===== Device Status Register (DEVSTAT) - Offset 0x0058 ===== */
+/* ===== Device Status Register (DEVSTAT) - Offset 0x0030 ===== */
 /*
  * 32-bit read-only register providing real-time device statistics.
  *
@@ -329,7 +292,7 @@
  *
  * Bits [31:24] - Reserved (must be 0)
  */
-#define ACCEL_REG_DEVSTAT   0x0058
+#define ACCEL_REG_DEVSTAT   0x0030
 
 #define ACCEL_DEVSTAT_NUM_PEERS_SHIFT     0
 #define ACCEL_DEVSTAT_NUM_PEERS_MASK      0xFF
@@ -341,7 +304,7 @@
 /* ===== Doorbell Registers - Offset 0x1000 ===== */
 /*
  * Doorbell registers for submission and completion queues.
- * Located at offset 0x1000 with stride defined by CAP.DSTRD.
+ * Located at offset 0x1000 with 4-byte stride.
  *
  * Submission Queue Doorbell (32-bit write-only):
  *   Offset: 0x1000 + (2 * qid * stride)
@@ -479,7 +442,7 @@
 #define ACCEL_FEAT_NUM_QUEUES           0x07  /* Number of queues */
 #define ACCEL_FEAT_P2P_CONFIG           0x10  /* P2P configuration */
 
-/* ===== P2P Queue Configuration Register (P2QQCFG) - Offset 0x0060 ===== */
+/* ===== P2P Queue Configuration Register (P2QQCFG) - Offset 0x0034 ===== */
 /*
  * 32-bit read-only register describing P2P MMIO queue capabilities.
  *
@@ -491,11 +454,11 @@
  *                Both SQ and CQ use the same size.
  *                Reset: 64
  *
- * Bits [31:16] - P2Q_DATA_SIZE: Data region size in 1GB units
- *                Amount of BAR4 space available for data transfers.
- *                Reset: 1024 (~1TB)
+ * Bits [31:16] - P2Q_DATA_SIZE: Data region size in 1MB units
+ *                Amount of BAR4 CMB space available for data transfers.
+ *                Reset: (ACCEL_BAR4_SIZE - ACCEL_P2Q_DATA_OFFSET) / 1MB
  */
-#define ACCEL_REG_P2QQCFG               0x0060
+#define ACCEL_REG_P2QQCFG               0x0034
 
 #define ACCEL_P2QQCFG_SLOTS_SHIFT       0
 #define ACCEL_P2QQCFG_SLOTS_MASK        0xF
@@ -532,13 +495,13 @@
 #define ACCEL_P2Q_SQ_ENTRIES            64      /* Entries per inbound SQ */
 #define ACCEL_P2Q_CQ_ENTRIES            64      /* Entries per receive CQ */
 
-/* BAR4 layout for P2P queues + data */
+/* BAR4 layout for P2P queues + CMB data */
 #define ACCEL_P2Q_SQ_OFFSET(slot)       ((slot) * 0x1000)       /* 4KB per SQ */
 #define ACCEL_P2Q_SQ_SIZE               (ACCEL_P2Q_SQ_ENTRIES * 64)  /* 4KB */
 #define ACCEL_P2Q_CQ_BASE               0x8000
 #define ACCEL_P2Q_CQ_OFFSET(slot)       (ACCEL_P2Q_CQ_BASE + (slot) * 0x400) /* 1KB per CQ */
 #define ACCEL_P2Q_CQ_SIZE               (ACCEL_P2Q_CQ_ENTRIES * 16)  /* 1KB */
-#define ACCEL_P2Q_DATA_OFFSET           0xC000  /* Start of data/scratchpad region */
+#define ACCEL_P2Q_DATA_OFFSET           0xC000  /* Start of CMB data region */
 
 /* ===== P2P Queue Command Opcodes ===== */
 /*
@@ -559,7 +522,7 @@
 /* ===== BAR Sizes and Offsets ===== */
 #define ACCEL_BAR0_SIZE     (64 * 1024)   /* 64KB - Controller registers */
 #define ACCEL_BAR2_SIZE     (16 * 1024)   /* 16KB - MSI-X table/PBA */
-#define ACCEL_BAR4_SIZE     (1ULL << 40)  /* 1TB - P2P queues + data RAM */
+#define ACCEL_BAR4_SIZE     (64 * 1024 * 1024)  /* 64MB - P2P queues + CMB */
 
 /* MSI-X table/PBA offsets within BAR2 */
 #define ACCEL_MSIX_TABLE_OFFSET     0x0000  /* MSI-X table at BAR2 offset 0 */
@@ -569,6 +532,7 @@
 #define ACCEL_MAX_IOQPAIRS      256     /* Maximum I/O queue pairs */
 #define ACCEL_MAX_QUEUE_ENTRIES 4096    /* Maximum entries per queue */
 #define ACCEL_MIN_QUEUE_ENTRIES 2       /* Minimum entries per queue */
+#define ACCEL_ADMIN_QUEUE_SIZE  64      /* Fixed admin queue size (entries) */
 
 /* ===== PCIe Configuration ===== */
 #define ACCEL_PCIE_VENDOR_ID    0x1234  /* QEMU vendor ID (example) */

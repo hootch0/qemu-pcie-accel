@@ -100,14 +100,14 @@ int accel_register_p2p_peer(PCIeAccel *n, uint16_t bdf, PCIDevice *pdev)
     peer->active_xfers = 0;
 
     /*
-     * Get peer's BAR4 scratchpad memory region for P2P transfers.
+     * Get peer's BAR4 CMB memory region for P2P transfers.
      * The peer device must be another pcie-accelerator with BAR4 initialized.
      */
     if (object_dynamic_cast(OBJECT(pdev), TYPE_PCIE_ACCEL)) {
         PCIeAccel *peer_accel = PCIE_ACCEL(pdev);
         peer->bar4 = &peer_accel->bar4;
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "pcie-accel: P2P peer 0x%x has BAR4 scratchpad (%lu bytes)\n",
+                      "pcie-accel: P2P peer 0x%x has BAR4 CMB (%lu bytes)\n",
                       bdf, (unsigned long)memory_region_size(peer->bar4));
     } else {
         peer->bar4 = NULL;
@@ -236,7 +236,7 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
     uint16_t status = ACCEL_SC_SUCCESS;
     void *bounce_buf = NULL;
     void *peer_ram;
-    uint64_t bar2_size;
+    uint64_t bar4_size;
 
     /* Lookup peer device */
     peer = accel_find_p2p_peer(n, peer_bdf);
@@ -246,10 +246,10 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
         return ACCEL_SC_P2P_PEER_NOT_FOUND;
     }
 
-    /* Check that peer has BAR4 scratchpad memory */
+    /* Check that peer has BAR4 CMB memory */
     if (!peer->bar4) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "pcie-accel: P2P peer 0x%x has no BAR4 scratchpad\n",
+                      "pcie-accel: P2P peer 0x%x has no BAR4 CMB\n",
                       peer_bdf);
         return ACCEL_SC_P2P_PEER_INVALID;
     }
@@ -264,18 +264,18 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
     }
 
     /* Get peer's BAR4 RAM pointer and validate address range */
-    bar2_size = memory_region_size(peer->bar4);
-    if (peer_addr + total_len > bar2_size) {
+    bar4_size = memory_region_size(peer->bar4);
+    if (peer_addr + total_len > bar4_size) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "pcie-accel: P2P address 0x%" PRIx64 " + len %u exceeds "
-                      "BAR4 size %" PRIu64 "\n", peer_addr, total_len, bar2_size);
+                      "BAR4 size %" PRIu64 "\n", peer_addr, total_len, bar4_size);
         return ACCEL_SC_INVALID_PRP;
     }
 
     peer_ram = memory_region_get_ram_ptr(peer->bar4);
     if (!peer_ram) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "pcie-accel: P2P peer 0x%x BAR4 is not RAM-backed\n",
+                      "pcie-accel: P2P peer 0x%x BAR4 CMB is not RAM-backed\n",
                       peer_bdf);
         return ACCEL_SC_P2P_PEER_INVALID;
     }
@@ -295,16 +295,16 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
 
     qemu_log_mask(LOG_GUEST_ERROR,
                   "pcie-accel: P2P %s START: peer=0x%x host_addr=0x%" PRIx64
-                  " peer_addr=0x%" PRIx64 " len=%u bar2_size=%" PRIu64 "\n",
+                  " peer_addr=0x%" PRIx64 " len=%u bar4_size=%" PRIu64 "\n",
                   is_write ? "WRITE" : "READ", peer_bdf, host_addr,
-                  peer_addr, total_len, bar2_size);
+                  peer_addr, total_len, bar4_size);
 
     /*
      * Transfer loop: Process data in chunks
      * For writes: Read from host -> Write to peer BAR4
      * For reads:  Read from peer BAR4 -> Write to host
      *
-     * peer_addr is an offset within peer's BAR4 scratchpad memory.
+     * peer_addr is an offset within peer's BAR4 CMB memory.
      */
     while (offset < total_len && status == ACCEL_SC_SUCCESS) {
         uint32_t xfer_len = MIN(chunk_size, total_len - offset);
@@ -693,7 +693,7 @@ static uint16_t accel_p2q_cmd_mmio_write(PCIeAccel *n,
     uint64_t src_off = le64_to_cpu(cmd->prp1);
     uint64_t dst_off = le64_to_cpu(cmd->dw.p2p.peer_addr);
     uint32_t length = le32_to_cpu(cmd->dw.p2p.length);
-    void *local_bar2;
+    void *local_cmb;
     void *bounce_buf;
     uint64_t data_region_size;
     MemTxResult result;
@@ -727,7 +727,7 @@ static uint16_t accel_p2q_cmd_mmio_write(PCIeAccel *n,
 
     /* Read data from submitter's BAR4 data region via cross-device MMIO */
     hwaddr src_addr = qp->outbound.peer_bar4 + ACCEL_P2Q_DATA_OFFSET + src_off;
-    local_bar2 = memory_region_get_ram_ptr(&n->bar4);
+    local_cmb = memory_region_get_ram_ptr(&n->bar4);
 
     uint32_t offset = 0;
     while (offset < length) {
@@ -746,7 +746,7 @@ static uint16_t accel_p2q_cmd_mmio_write(PCIeAccel *n,
         }
 
         /* Write to local BAR4 data region */
-        memcpy((uint8_t *)local_bar2 + ACCEL_P2Q_DATA_OFFSET + dst_off + offset,
+        memcpy((uint8_t *)local_cmb + ACCEL_P2Q_DATA_OFFSET + dst_off + offset,
                bounce_buf, chunk);
         offset += chunk;
     }
@@ -782,7 +782,7 @@ static uint16_t accel_p2q_cmd_mmio_read(PCIeAccel *n,
     uint64_t dst_off = le64_to_cpu(cmd->prp1);  /* dest in submitter's data region */
     uint64_t src_off = le64_to_cpu(cmd->dw.p2p.peer_addr);  /* src in our data region */
     uint32_t length = le32_to_cpu(cmd->dw.p2p.length);
-    void *local_bar2;
+    void *local_cmb;
     void *bounce_buf;
     uint64_t data_region_size;
     MemTxResult result;
@@ -804,7 +804,7 @@ static uint16_t accel_p2q_cmd_mmio_read(PCIeAccel *n,
     }
 
     bounce_buf = g_malloc(MIN(length, ACCEL_P2P_CHUNK_SIZE));
-    local_bar2 = memory_region_get_ram_ptr(&n->bar4);
+    local_cmb = memory_region_get_ram_ptr(&n->bar4);
 
     hwaddr dst_addr = qp->outbound.peer_bar4 + ACCEL_P2Q_DATA_OFFSET + dst_off;
 
@@ -814,7 +814,7 @@ static uint16_t accel_p2q_cmd_mmio_read(PCIeAccel *n,
 
         /* Read from local BAR4 data region */
         memcpy(bounce_buf,
-               (uint8_t *)local_bar2 + ACCEL_P2Q_DATA_OFFSET + src_off + offset,
+               (uint8_t *)local_cmb + ACCEL_P2Q_DATA_OFFSET + src_off + offset,
                chunk);
 
         /* Write to submitter's BAR4 data region via cross-device MMIO */
@@ -861,7 +861,7 @@ static uint16_t accel_p2q_cmd_loopback(PCIeAccel *n, AccelCmd *cmd)
     uint64_t data_off = le64_to_cpu(cmd->dw.p2p.peer_addr);
     uint32_t length = le32_to_cpu(cmd->dw.p2p.length);
     uint32_t pattern = le32_to_cpu(cmd->dw.loopback.pattern);
-    void *local_bar2;
+    void *local_cmb;
     uint64_t data_region_size;
 
     data_region_size = ACCEL_BAR4_SIZE - ACCEL_P2Q_DATA_OFFSET;
@@ -870,8 +870,8 @@ static uint16_t accel_p2q_cmd_loopback(PCIeAccel *n, AccelCmd *cmd)
         return ACCEL_SC_P2Q_DATA_RANGE;
     }
 
-    local_bar2 = memory_region_get_ram_ptr(&n->bar4);
-    uint8_t *data = (uint8_t *)local_bar2 + ACCEL_P2Q_DATA_OFFSET + data_off;
+    local_cmb = memory_region_get_ram_ptr(&n->bar4);
+    uint8_t *data = (uint8_t *)local_cmb + ACCEL_P2Q_DATA_OFFSET + data_off;
 
     /* XOR with pattern if specified */
     if (pattern != 0) {
@@ -900,7 +900,7 @@ void accel_process_p2p_sq(void *opaque)
 {
     AccelP2PQueuePair *qp = opaque;
     PCIeAccel *n = qp->ctrl;
-    void *bar2_ram;
+    void *bar4_ram;
     AccelCmd cmd;
     AccelCqe cqe;
     uint16_t status;
@@ -909,7 +909,7 @@ void accel_process_p2p_sq(void *opaque)
         return;
     }
 
-    bar2_ram = memory_region_get_ram_ptr(&n->bar4);
+    bar4_ram = memory_region_get_ram_ptr(&n->bar4);
 
     qemu_log_mask(LOG_UNIMP,
                   "pcie-accel: P2Q process_sq: slot=%u peer=0x%x "
@@ -921,7 +921,7 @@ void accel_process_p2p_sq(void *opaque)
         /* Read command from BAR4 inbound SQ (local RAM access) */
         uint32_t sq_offset = ACCEL_P2Q_SQ_OFFSET(qp->slot) +
                              (qp->isq.head << ACCEL_SQES);
-        memcpy(&cmd, (uint8_t *)bar2_ram + sq_offset, sizeof(cmd));
+        memcpy(&cmd, (uint8_t *)bar4_ram + sq_offset, sizeof(cmd));
 
         /* Advance SQ head */
         qp->isq.head = (qp->isq.head + 1) % qp->isq.size;
@@ -1011,7 +1011,7 @@ uint16_t accel_cmd_p2p_queue_setup(PCIeAccel *n, AccelRequest *req)
 
     qemu_log_mask(LOG_UNIMP,
                   "pcie-accel: P2Q_SETUP: peer=0x%x slot=%u our_slot=%u "
-                  "bar0=0x%" PRIx64 " bar2=0x%" PRIx64 "\n",
+                  "bar0=0x%" PRIx64 " bar4=0x%" PRIx64 "\n",
                   peer_bdf, slot, our_slot, peer_bar0, peer_bar4);
 
     /* Validate slot number */
@@ -1089,10 +1089,10 @@ uint16_t accel_cmd_p2p_queue_setup(PCIeAccel *n, AccelRequest *req)
     qp->outbound.peer_dev = pdev;
 
     /* Clear BAR4 SQ and CQ regions for this slot */
-    void *bar2_ram = memory_region_get_ram_ptr(&n->bar4);
-    memset((uint8_t *)bar2_ram + ACCEL_P2Q_SQ_OFFSET(slot), 0,
+    void *bar4_ram = memory_region_get_ram_ptr(&n->bar4);
+    memset((uint8_t *)bar4_ram + ACCEL_P2Q_SQ_OFFSET(slot), 0,
            ACCEL_P2Q_SQ_SIZE);
-    memset((uint8_t *)bar2_ram + ACCEL_P2Q_CQ_OFFSET(slot), 0,
+    memset((uint8_t *)bar4_ram + ACCEL_P2Q_CQ_OFFSET(slot), 0,
            ACCEL_P2Q_CQ_SIZE);
 
     /* Create BH for inbound SQ processing */

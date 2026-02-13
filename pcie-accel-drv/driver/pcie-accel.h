@@ -35,21 +35,20 @@
 #define ACCEL_MAX_QUEUES	256
 #define ACCEL_MAX_P2P_PEERS	32
 #define ACCEL_MAX_INFLIGHT	4096
+#define ACCEL_ADMIN_QUEUE_SIZE	64
 
 /* Register offsets (must match QEMU device) */
 #define ACCEL_REG_CAP		0x0000
-#define ACCEL_REG_VS		0x0008
-#define ACCEL_REG_INTMS		0x000C
-#define ACCEL_REG_INTMC		0x0010
-#define ACCEL_REG_CC		0x0014
-#define ACCEL_REG_CSTS		0x001C
-#define ACCEL_REG_AQA		0x0024
-#define ACCEL_REG_ASQ		0x0028
-#define ACCEL_REG_ACQ		0x0030
-#define ACCEL_REG_P2PCFG	0x0040
-#define ACCEL_REG_INTCOAL	0x0050
-#define ACCEL_REG_DEVSTAT	0x0058
-#define ACCEL_REG_P2QQCFG	0x0060
+#define ACCEL_REG_CC		0x0008
+#define ACCEL_REG_CSTS		0x000C
+#define ACCEL_REG_ASQ		0x0010
+#define ACCEL_REG_ACQ		0x0018
+#define ACCEL_REG_CMBOFF	0x0020
+#define ACCEL_REG_CMBSZ		0x0024
+#define ACCEL_REG_P2PCFG	0x0028
+#define ACCEL_REG_INTCOAL	0x002C
+#define ACCEL_REG_DEVSTAT	0x0030
+#define ACCEL_REG_P2QQCFG	0x0034
 #define ACCEL_REG_DOORBELL	0x1000
 #define ACCEL_P2Q_DB_BASE	0x4000
 #define ACCEL_P2Q_DB_STRIDE	8
@@ -79,7 +78,7 @@
 #define ACCEL_P2Q_CMD_MMIO_READ		0x81
 #define ACCEL_P2Q_CMD_LOOPBACK		0x82
 
-/* P2P Queue BAR4 layout */
+/* P2P Queue BAR4 CMB layout */
 #define ACCEL_P2Q_MAX_SLOTS		7
 #define ACCEL_P2Q_SQ_ENTRIES		64
 #define ACCEL_P2Q_CQ_ENTRIES		64
@@ -295,9 +294,9 @@ struct accel_queue {
 struct accel_p2p_peer {
 	struct pci_dev *pdev;
 	u16 bdf;
-	void __iomem *mem;		/* BAR4 scratchpad mapping */
-	resource_size_t mem_size;	/* BAR4 size */
-	resource_size_t mem_phys;	/* BAR4 physical address */
+	void __iomem *mem;		/* BAR4 CMB mapping */
+	resource_size_t mem_size;	/* BAR4 CMB size */
+	resource_size_t mem_phys;	/* BAR4 CMB physical address */
 	struct list_head list;
 };
 
@@ -318,8 +317,8 @@ struct accel_p2p_queue_setup {
 struct accel_dev {
 	struct pci_dev *pdev;
 	void __iomem *bar0;			/* BAR0: Controller registers */
-	void __iomem *bar4;			/* BAR4: P2P queues + data */
-	resource_size_t bar4_size;		/* BAR4 size */
+	void __iomem *bar4;			/* BAR4: P2P queues + CMB */
+	resource_size_t bar4_size;		/* BAR4 CMB size */
 
 	struct cdev cdev;
 	dev_t devt;
