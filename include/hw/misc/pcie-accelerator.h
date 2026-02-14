@@ -232,7 +232,7 @@ struct AccelP2PPeer {
     uint16_t bdf;                       /* Bus:Device:Function (identifies peer) */
     PCIDevice *pci_dev;                 /* Peer PCI device pointer */
     AddressSpace *as;                   /* Peer's DMA address space */
-    MemoryRegion *bar4;                 /* Peer's BAR4 CMB memory region */
+    MemoryRegion *cmb;                  /* Peer's CMB memory region */
 
     bool enabled;                       /* Peer is enabled and ready */
     uint32_t active_xfers;              /* Current active transfers to this peer */
@@ -241,50 +241,64 @@ struct AccelP2PPeer {
 };
 
 /*
- * P2P MMIO Queue Pair
+ * P2P Ring Buffer Header (in CMB RAM)
  *
- * Each slot represents a bidirectional queue pair between this device and a
- * peer. The inbound SQ receives commands FROM the peer, while the receive CQ
- * gets completions FROM the peer (for commands we submitted to them).
- *
- * Queue data lives in BAR4 (RAM). Doorbells are in BAR0 (MMIO).
- * Cross-device communication uses address_space_write() to peer BAR.
+ * Each ring buffer starts with a 64-byte header followed by the data area.
  */
-typedef struct AccelP2PQueuePair {
+typedef struct QEMU_PACKED AccelRingHdr {
+    uint32_t head;                      /* Consumer position (byte offset in data area) */
+    uint32_t tail;                      /* Producer position (byte offset in data area) */
+    uint32_t size;                      /* Data area capacity in bytes */
+    uint32_t flags;                     /* Ring status flags */
+    uint32_t reserved[12];              /* Pad to 64 bytes */
+} AccelRingHdr;
+
+QEMU_BUILD_BUG_ON(sizeof(AccelRingHdr) != 64);
+
+/*
+ * P2P Ring Message (variable length, 8-byte aligned)
+ *
+ * Messages are enqueued in the ring data area as a circular buffer.
+ */
+typedef struct QEMU_PACKED AccelRingMsg {
+    uint16_t type;                      /* ACCEL_RING_MSG_DATA/NOTIFY/STATUS */
+    uint16_t flags;                     /* Per-message flags */
+    uint32_t length;                    /* Total length including header (8-byte aligned) */
+} AccelRingMsg;
+
+QEMU_BUILD_BUG_ON(sizeof(AccelRingMsg) != 8);
+
+/*
+ * P2P Ring Buffer
+ *
+ * Each slot represents a unidirectional inbound ring buffer. Peer devices
+ * produce messages into our ring; we consume them. For the reverse direction,
+ * we write to the peer's inbound ring.
+ *
+ * Ring data lives in BAR0 CMB (RAM). Doorbells are in BAR0 MMIO.
+ * Cross-device communication uses address_space_write() to peer BAR0.
+ */
+typedef struct AccelP2PRing {
     struct PCIeAccel *ctrl;             /* Parent controller */
-    uint8_t  slot;                      /* Slot index (0 to P2Q_MAX_SLOTS-1) */
+    uint8_t  slot;                      /* Slot index (0 to P2R_MAX_SLOTS-1) */
     uint16_t peer_bdf;                  /* Peer device BDF */
     bool     active;                    /* Slot is configured and active */
 
-    /* Inbound SQ state (peer submits commands TO us via our BAR4) */
-    struct {
-        uint32_t head;                  /* Head pointer (we advance after reading) */
-        uint32_t tail;                  /* Tail pointer (peer updates via doorbell) */
-        uint32_t size;                  /* Queue size in entries */
-    } isq;
+    /* Inbound ring state (mirrors ring header in CMB) */
+    uint32_t head;                      /* Consumer position (we advance) */
+    uint32_t tail;                      /* Producer position (peer updates via doorbell) */
+    uint32_t size;                      /* Data area capacity in bytes */
 
-    /* Receive CQ state (peer writes completions TO us in our BAR4) */
+    /* Outbound tracking (for writing to peer's ring) */
     struct {
-        uint32_t head;                  /* Head pointer (we advance after consuming) */
-        uint32_t tail;                  /* Tail pointer (peer updates via doorbell) */
-        uint32_t size;                  /* Queue size in entries */
-        uint8_t  phase;                 /* Expected phase bit for next CQE */
-    } rcq;
-
-    /* Outbound tracking (when we submit commands TO this peer) */
-    struct {
-        uint32_t sq_tail;               /* Our SQ tail in peer's inbound SQ */
-        uint32_t cq_tail;               /* CQ tail for completions we write to peer */
-        uint8_t  cq_phase;              /* CQ phase for completions we write */
         uint8_t  our_slot;              /* Our slot index in peer's device */
         hwaddr   peer_bar0;             /* Peer's BAR0 physical address */
-        hwaddr   peer_bar4;             /* Peer's BAR4 physical address */
         AddressSpace *peer_as;          /* Peer's PCI address space */
         PCIDevice *peer_dev;            /* Peer PCI device pointer */
     } outbound;
 
-    QEMUBH *sq_bh;                      /* BH for processing inbound SQ commands */
-} AccelP2PQueuePair;
+    QEMUBH *bh;                         /* BH for processing inbound ring messages */
+} AccelP2PRing;
 
 /*
  * ===== Main Device State =====
@@ -296,9 +310,10 @@ struct PCIeAccel {
     PCIDevice parent_obj;
 
     /* Memory Regions */
-    MemoryRegion bar0;                  /* Main register BAR (64KB) */
+    MemoryRegion bar0;                  /* BAR0 container (64MB) */
+    /* bar0 is MMIO; CMB RAM overlays at ACCEL_CMB_OFFSET */
+    MemoryRegion cmb;                   /* CMB RAM sub-region */
     MemoryRegion msix_bar;              /* MSI-X table/PBA BAR2 (16KB) */
-    MemoryRegion bar4;                  /* P2P queues + CMB (64MB) */
 
     /* Device Registers (in-memory representation of BAR0) */
     struct {
@@ -307,7 +322,7 @@ struct PCIeAccel {
         uint32_t csts;                  /* Status */
         uint64_t asq;                   /* Admin SQ base address */
         uint64_t acq;                   /* Admin CQ base address */
-        uint32_t cmboff;                /* CMB offset within BAR4 */
+        uint32_t cmboff;                /* CMB offset within BAR0 */
         uint32_t cmbsz;                 /* CMB size in bytes */
         uint32_t p2pcfg;                /* P2P configuration */
         uint32_t intcoal;               /* Interrupt coalescing */
@@ -337,10 +352,10 @@ struct PCIeAccel {
         AccelP2PPeer peers[ACCEL_MAX_P2P_PEERS];  /* Peer device array */
         QTAILQ_HEAD(, AccelP2PPeer) peer_list;    /* Active peer list */
 
-        /* P2P MMIO Queue Pairs */
-        AccelP2PQueuePair p2p_queues[ACCEL_P2Q_MAX_SLOTS];
-        uint8_t num_p2p_queues;         /* Number of active P2P queue pairs */
-        uint32_t p2qqcfg;               /* P2P Queue Configuration register */
+        /* P2P Ring Buffers */
+        AccelP2PRing p2p_rings[ACCEL_P2R_MAX_SLOTS];
+        uint8_t num_p2p_rings;          /* Number of active P2P ring buffers */
+        uint32_t p2rcfg;                /* P2P Ring Configuration register */
     } p2p;
 
     /* PASID/SVA Support */
@@ -491,13 +506,13 @@ void accel_unregister_p2p_peer(PCIeAccel *n, uint16_t bdf);
 size_t accel_p2p_get_stats(PCIeAccel *n, void *buf, size_t size);
 void accel_p2p_dump_state(PCIeAccel *n);
 
-/* P2P MMIO Queue functions (implemented in pcie-accelerator-p2p.c) */
-uint16_t accel_cmd_p2p_queue_setup(PCIeAccel *n, AccelRequest *req);
-uint16_t accel_cmd_p2p_queue_teardown(PCIeAccel *n, AccelRequest *req);
-void accel_p2p_queue_doorbell(PCIeAccel *n, hwaddr offset, uint32_t val);
-void accel_process_p2p_sq(void *opaque);
-void accel_p2p_queue_reset(PCIeAccel *n);
-void accel_p2p_queue_cleanup(PCIeAccel *n);
+/* P2P Ring Buffer functions (implemented in pcie-accelerator-p2p.c) */
+uint16_t accel_cmd_p2p_ring_setup(PCIeAccel *n, AccelRequest *req);
+uint16_t accel_cmd_p2p_ring_teardown(PCIeAccel *n, AccelRequest *req);
+void accel_p2p_ring_doorbell(PCIeAccel *n, hwaddr offset, uint32_t val);
+void accel_process_p2p_ring(void *opaque);
+void accel_p2p_ring_reset(PCIeAccel *n);
+void accel_p2p_ring_cleanup(PCIeAccel *n);
 
 /* Utility functions */
 uint16_t accel_dma_read_safe(PCIeAccel *n, uint64_t addr, void *buf, size_t len);

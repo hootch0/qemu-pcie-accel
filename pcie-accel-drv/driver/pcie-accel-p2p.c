@@ -165,26 +165,30 @@ int accel_setup_p2p_peer(struct accel_dev *dev, u16 peer_bdf)
 #endif
 
 	/*
-	 * Map the peer's BAR4 (CMB) for P2P transfers.
-	 * This is where P2P data is stored. BAR4 is a RAM-backed region
-	 * that can be directly accessed for peer-to-peer DMA operations.
+	 * Map the peer's CMB (in BAR0) for P2P transfers.
+	 * CMB starts at ACCEL_CMB_OFFSET within BAR0. BAR0 is a RAM-backed
+	 * region that can be directly accessed for peer-to-peer DMA operations.
 	 */
-	if (pci_resource_len(peer_pdev, 4) > 0) {
-		peer->mem = pci_iomap(peer_pdev, 4, 0);
+	if (pci_resource_len(peer_pdev, 0) > ACCEL_CMB_OFFSET) {
+		resource_size_t bar0_start = pci_resource_start(peer_pdev, 0);
+		resource_size_t bar0_len = pci_resource_len(peer_pdev, 0);
+		resource_size_t cmb_size = bar0_len - ACCEL_CMB_OFFSET;
+
+		peer->mem = ioremap(bar0_start + ACCEL_CMB_OFFSET, cmb_size);
 		if (peer->mem) {
-			peer->mem_size = pci_resource_len(peer_pdev, 4);
-			peer->mem_phys = pci_resource_start(peer_pdev, 4);
+			peer->mem_size = cmb_size;
+			peer->mem_phys = bar0_start + ACCEL_CMB_OFFSET;
 			dev_info(&dev->pdev->dev,
-				"P2P: Mapped peer BAR4 CMB: %pR (phys=0x%llx)\n",
-				&peer_pdev->resource[4],
-				(unsigned long long)peer->mem_phys);
+				"P2P: Mapped peer CMB: phys=0x%llx size=%llu\n",
+				(unsigned long long)peer->mem_phys,
+				(unsigned long long)cmb_size);
 		} else {
 			dev_warn(&dev->pdev->dev,
-				"P2P: Failed to map peer BAR4\n");
+				"P2P: Failed to map peer CMB\n");
 		}
 	} else {
 		dev_warn(&dev->pdev->dev,
-			"P2P: Peer has no BAR4 CMB memory\n");
+			"P2P: Peer BAR0 too small for CMB\n");
 	}
 
 	/*
@@ -230,7 +234,7 @@ int accel_setup_p2p_peer(struct accel_dev *dev, u16 peer_bdf)
 
 err_unmap:
 	if (peer->mem)
-		pci_iounmap(peer_pdev, peer->mem);
+		iounmap(peer->mem);
 	pci_dev_put(peer_pdev);
 	kfree(peer);
 	return ret;
@@ -275,7 +279,7 @@ static int __maybe_unused accel_remove_p2p_peer(struct accel_dev *dev, u16 peer_
 
 	/* Cleanup */
 	if (peer->mem)
-		pci_iounmap(peer->pdev, peer->mem);
+		iounmap(peer->mem);
 	pci_dev_put(peer->pdev);
 	kfree(peer);
 
@@ -320,7 +324,7 @@ void accel_cleanup_p2p_peers(struct accel_dev *dev)
 		list_del(&peer->list);
 
 		if (peer->mem)
-			pci_iounmap(peer->pdev, peer->mem);
+			iounmap(peer->mem);
 		pci_dev_put(peer->pdev);
 		kfree(peer);
 
@@ -437,34 +441,34 @@ void accel_p2p_dma_unmap(struct accel_dev *dev, dma_addr_t dma_addr, size_t len)
 }
 
 /*
- * ===== P2P MMIO Queue Support =====
+ * ===== P2P Ring Buffer Support =====
  */
 
 /**
- * accel_p2p_queue_setup - Set up a P2P MMIO queue pair with a peer
+ * accel_p2p_ring_setup - Set up a P2P ring buffer with a peer
  * @dev: Device structure
- * @params: P2P queue setup parameters
+ * @params: P2P ring setup parameters
  *
- * Issues an admin command to the device to set up a P2P MMIO queue pair.
- * The peer's BAR addresses are read from PCI config space if not provided.
+ * Issues an admin command to the device to set up a P2P ring buffer slot.
+ * The peer's BAR0 address is read from PCI config space if not provided.
  *
  * Returns: 0 on success, negative errno on failure
  */
-int accel_p2p_queue_setup(struct accel_dev *dev,
-			  struct accel_p2p_queue_setup *params)
+int accel_p2p_ring_setup(struct accel_dev *dev,
+			 struct accel_p2p_ring_setup *params)
 {
 	struct accel_cmd cmd = {};
 	struct accel_cqe cqe = {};
 	struct pci_dev *peer_pdev;
-	resource_size_t peer_bar0, peer_bar4;
+	resource_size_t peer_bar0;
 	int ret;
 
-	if (params->slot >= ACCEL_P2Q_MAX_SLOTS ||
-	    params->peer_slot >= ACCEL_P2Q_MAX_SLOTS)
+	if (params->slot >= ACCEL_P2R_MAX_SLOTS ||
+	    params->peer_slot >= ACCEL_P2R_MAX_SLOTS)
 		return -EINVAL;
 
-	/* If BAR addresses not provided, read from peer's PCI config */
-	if (params->peer_bar0 == 0 || params->peer_bar4 == 0) {
+	/* If BAR0 address not provided, read from peer's PCI config */
+	if (params->peer_bar0 == 0) {
 		peer_pdev = pci_get_domain_bus_and_slot(
 			pci_domain_nr(dev->pdev->bus),
 			(params->peer_bdf >> 8) & 0xFF,
@@ -472,50 +476,46 @@ int accel_p2p_queue_setup(struct accel_dev *dev,
 				  params->peer_bdf & 0x7));
 		if (!peer_pdev) {
 			dev_err(&dev->pdev->dev,
-				"P2P queue: peer 0x%x not found\n",
+				"P2P ring: peer 0x%x not found\n",
 				params->peer_bdf);
 			return -ENODEV;
 		}
 
 		peer_bar0 = pci_resource_start(peer_pdev, 0);
-		peer_bar4 = pci_resource_start(peer_pdev, 4);
 		pci_dev_put(peer_pdev);
 
-		if (!peer_bar0 || !peer_bar4) {
+		if (!peer_bar0) {
 			dev_err(&dev->pdev->dev,
-				"P2P queue: peer 0x%x BAR not mapped\n",
+				"P2P ring: peer 0x%x BAR0 not mapped\n",
 				params->peer_bdf);
 			return -EINVAL;
 		}
 	} else {
 		peer_bar0 = params->peer_bar0;
-		peer_bar4 = params->peer_bar4;
 	}
 
-	/* Build P2P queue setup admin command */
-	cmd.opcode = ACCEL_ADM_CMD_P2P_QUEUE_SETUP;
+	/* Build P2P ring setup admin command */
+	cmd.opcode = ACCEL_ADM_CMD_P2P_RING_SETUP;
 	cmd.dw.admin.cdw10 = cpu_to_le32(
 		(params->peer_bdf & 0xFFFF) |
 		((params->slot & 0xF) << 16) |
 		((params->peer_slot & 0xF) << 20));
 	cmd.dw.admin.cdw11 = cpu_to_le32(peer_bar0 & 0xFFFFFFFF);
 	cmd.dw.admin.cdw12 = cpu_to_le32((peer_bar0 >> 32) & 0xFFFFFFFF);
-	cmd.dw.admin.cdw13 = cpu_to_le32(peer_bar4 & 0xFFFFFFFF);
-	cmd.dw.admin.cdw14 = cpu_to_le32((peer_bar4 >> 32) & 0xFFFFFFFF);
 
 	ret = accel_submit_admin_cmd(dev, &cmd, &cqe);
 	if (ret) {
 		dev_err(&dev->pdev->dev,
-			"P2P queue setup failed: slot=%u peer=0x%x ret=%d\n",
+			"P2P ring setup failed: slot=%u peer=0x%x ret=%d\n",
 			params->slot, params->peer_bdf, ret);
 		return ret;
 	}
 
 	dev_info(&dev->pdev->dev,
-		 "P2P queue setup: slot=%u peer=0x%x peer_slot=%u "
-		 "bar0=0x%llx bar4=0x%llx\n",
+		 "P2P ring setup: slot=%u peer=0x%x peer_slot=%u "
+		 "bar0=0x%llx\n",
 		 params->slot, params->peer_bdf, params->peer_slot,
-		 (unsigned long long)peer_bar0, (unsigned long long)peer_bar4);
+		 (unsigned long long)peer_bar0);
 
 	return 0;
 }

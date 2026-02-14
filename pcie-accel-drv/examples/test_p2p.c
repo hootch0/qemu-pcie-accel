@@ -604,37 +604,37 @@ out:
 }
 
 /**
- * run_p2p_queue_setup_test - Test P2P MMIO queue setup between two devices
+ * run_p2p_ring_setup_test - Test P2P ring buffer setup between two devices
  *
- * Sets up P2P MMIO queues between two devices so they can exchange
- * commands directly via MMIO. After setup, runs a regular P2P write/read
- * to verify the devices still function correctly with queues active.
+ * Sets up P2P ring buffers between two devices so they can exchange
+ * messages directly via ring buffers. After setup, runs a regular P2P
+ * write/read to verify the devices still function correctly with rings active.
  */
-static int run_p2p_queue_setup_test(struct accel_device *dev1,
-                                     struct accel_device *dev2,
-                                     uint16_t bdf1, uint16_t bdf2,
-                                     uint16_t qid, size_t size)
+static int run_p2p_ring_setup_test(struct accel_device *dev1,
+                                    struct accel_device *dev2,
+                                    uint16_t bdf1, uint16_t bdf2,
+                                    uint16_t qid, size_t size)
 {
     int ret;
 
-    printf("P2P MMIO Queue Setup Test\n");
-    printf("=========================\n\n");
+    printf("P2P Ring Buffer Setup Test\n");
+    printf("==========================\n\n");
 
     /*
-     * Set up P2P queues: dev1 uses slot 0 for dev2, dev2 uses slot 0 for dev1.
-     * slot = our slot in peer's device (where peer writes inbound SQEs to us)
-     * peer_slot = peer's slot in our device (where we receive CQEs)
+     * Set up P2P rings: dev1 uses slot 0 for dev2, dev2 uses slot 0 for dev1.
+     * slot = our slot in peer's device (where peer produces inbound messages)
+     * peer_slot = peer's slot in our device (our inbound ring for this peer)
      */
-    printf("Setting up P2P queue: dev1 -> dev2 (slot=0, peer_slot=0)...\n");
-    ret = accel_p2p_queue_setup(dev1, bdf2, 0, 0);
+    printf("Setting up P2P ring: dev1 -> dev2 (slot=0, peer_slot=0)...\n");
+    ret = accel_p2p_ring_setup(dev1, bdf2, 0, 0);
     if (ret != ACCEL_SUCCESS) {
         fprintf(stderr, "  FAILED: %s (ret=%d)\n", accel_strerror(ret), ret);
         return -1;
     }
     printf("  OK\n");
 
-    printf("Setting up P2P queue: dev2 -> dev1 (slot=0, peer_slot=0)...\n");
-    ret = accel_p2p_queue_setup(dev2, bdf1, 0, 0);
+    printf("Setting up P2P ring: dev2 -> dev1 (slot=0, peer_slot=0)...\n");
+    ret = accel_p2p_ring_setup(dev2, bdf1, 0, 0);
     if (ret != ACCEL_SUCCESS) {
         fprintf(stderr, "  FAILED: %s (ret=%d)\n", accel_strerror(ret), ret);
         return -1;
@@ -642,20 +642,20 @@ static int run_p2p_queue_setup_test(struct accel_device *dev1,
     printf("  OK\n\n");
 
     /*
-     * Verify devices still work with P2P queues active by running
+     * Verify devices still work with P2P rings active by running
      * a regular host-mediated P2P write/read cycle.
      */
-    printf("Verifying host-mediated P2P still works with queues active...\n");
+    printf("Verifying host-mediated P2P still works with rings active...\n");
     ret = run_p2p_test_sync(dev1, dev2, bdf2, qid, size, 0);
     if (ret != 0) {
-        fprintf(stderr, "  Host P2P test FAILED after queue setup\n");
+        fprintf(stderr, "  Host P2P test FAILED after ring setup\n");
         return -1;
     }
     printf("  Host-mediated P2P still functional\n\n");
 
-    /* Tear down P2P queues */
-    printf("Tearing down P2P queues...\n");
-    ret = accel_p2p_queue_teardown(dev1, 0);
+    /* Tear down P2P rings */
+    printf("Tearing down P2P rings...\n");
+    ret = accel_p2p_ring_teardown(dev1, 0);
     if (ret != ACCEL_SUCCESS) {
         fprintf(stderr, "  dev1 teardown FAILED: %s (ret=%d)\n",
                 accel_strerror(ret), ret);
@@ -663,7 +663,7 @@ static int run_p2p_queue_setup_test(struct accel_device *dev1,
     }
     printf("  dev1 slot 0: OK\n");
 
-    ret = accel_p2p_queue_teardown(dev2, 0);
+    ret = accel_p2p_ring_teardown(dev2, 0);
     if (ret != ACCEL_SUCCESS) {
         fprintf(stderr, "  dev2 teardown FAILED: %s (ret=%d)\n",
                 accel_strerror(ret), ret);
@@ -671,7 +671,7 @@ static int run_p2p_queue_setup_test(struct accel_device *dev1,
     }
     printf("  dev2 slot 0: OK\n\n");
 
-    printf("P2P MMIO queue setup/teardown: PASSED\n");
+    printf("P2P ring buffer setup/teardown: PASSED\n");
 
     return 0;
 }
@@ -691,13 +691,13 @@ static void print_usage(const char *prog)
            DEFAULT_CONCURRENT);
     printf("  -a              Use async mode with io_uring\n");
     printf("  -b              Use bidirectional async mode\n");
-    printf("  -q              Test P2P MMIO queue setup\n");
+    printf("  -q              Test P2P ring setup\n");
     printf("  -h              Show this help\n");
     printf("\nModes:\n");
     printf("  (default)       Synchronous write/read per iteration\n");
     printf("  -a              Concurrent async transfers using io_uring\n");
     printf("  -b              Bidirectional transfers (dev1<->dev2)\n");
-    printf("  -q              Set up P2P MMIO queues and verify\n");
+    printf("  -q              Set up P2P ring buffers and verify\n");
     printf("\nNote: Both devices must exist and be accessible.\n");
 }
 
@@ -711,7 +711,7 @@ int main(int argc, char *argv[])
     uint16_t qid = 1;
     bool async_mode = false;
     bool bidirectional = false;
-    bool queue_setup_test = false;
+    bool ring_setup_test = false;
     struct accel_device *dev1 = NULL;
     struct accel_device *dev2 = NULL;
     uint16_t bdf1, bdf2;
@@ -743,7 +743,7 @@ int main(int argc, char *argv[])
             bidirectional = true;
             break;
         case 'q':
-            queue_setup_test = true;
+            ring_setup_test = true;
             break;
         case 'h':
         default:
@@ -759,7 +759,7 @@ int main(int argc, char *argv[])
     printf("Size:       %zu bytes\n", size);
     printf("Iterations: %d\n", iterations);
     printf("Mode:       %s\n",
-           queue_setup_test ? "P2P MMIO queue setup" :
+           ring_setup_test ? "P2P ring setup" :
            bidirectional ? "bidirectional async" :
            async_mode ? "concurrent async" : "synchronous");
     if (async_mode)
@@ -842,9 +842,9 @@ int main(int argc, char *argv[])
     int passed = 0;
     int failed = 0;
 
-    if (queue_setup_test) {
-        /* P2P MMIO queue setup test */
-        ret = run_p2p_queue_setup_test(dev1, dev2, bdf1, bdf2, qid, size);
+    if (ring_setup_test) {
+        /* P2P ring setup test */
+        ret = run_p2p_ring_setup_test(dev1, dev2, bdf1, bdf2, qid, size);
         passed = (ret == 0) ? 1 : 0;
         failed = (ret == 0) ? 0 : 1;
     } else if (bidirectional) {

@@ -16,7 +16,11 @@
 #define HW_PCIE_ACCELERATOR_REGS_H
 
 /*
- * ===== Controller Register Map (BAR0 - 64KB MMIO) =====
+ * ===== Controller Register Map (BAR0 - 64MB container) =====
+ *
+ * BAR0 is a 64MB container with two sub-regions:
+ *   [0x00000000 - 0x0000FFFF]  MMIO (64KB): registers + doorbells
+ *   [0x00010000 - end]         CMB RAM: ring buffers + data
  *
  * All multi-byte fields are little-endian.
  */
@@ -61,11 +65,15 @@
  *                Value N represent power of 2. 2^N
  *                Reset: 0x4 (16B)
  * 
- * Bits [23:20]  - MAXQ: host CQ/SQ pair count
+ * Bits [23:20]  - MAXQ: max host CQ/SQ pair count
  *                Value N represent power of 2. 2^N
  *                Reset: 0x4 (16B)
  * 
- * Bits [63:24] - Reserved (must be 0)
+ * Bits [27:24]  - MAXR: max P2P ring buffer count
+ *                Value N represent power of 2. 2^N
+ *                Reset: 0x4 (16B)
+ * 
+ * Bits [63:28] - Reserved (must be 0)
  */
 #define ACCEL_REG_CAP       0x0000
 
@@ -83,6 +91,8 @@
 #define ACCEL_CAP_DEPTH_MASK        0xF
 #define ACCEL_CAP_MAXQ_SHIFT        20
 #define ACCEL_CAP_MAXQ_MASK         0xF
+#define ACCEL_CAP_MAXR_SHIFT        24
+#define ACCEL_CAP_MAXR_MASK         0xF
 
 /* ===== Controller Configuration Register (CC) - Offset 0x0008 ===== */
 /*
@@ -201,10 +211,10 @@
 /* ===== CMB Offset Register (CMBOFF) - Offset 0x0020 ===== */
 /*
  * 32-bit read-only register indicating the byte offset of the Controller
- * Memory Buffer (CMB) within BAR4.
+ * Memory Buffer (CMB) within BAR0.
  *
- * Bits [31:0]  - OFFSET: CMB byte offset within BAR4
- *                Reset: ACCEL_P2Q_DATA_OFFSET (0xC000)
+ * Bits [31:0]  - OFFSET: CMB byte offset within BAR0
+ *                Reset: ACCEL_CMB_OFFSET (0x10000)
  */
 #define ACCEL_REG_CMBOFF    0x0020
 
@@ -214,7 +224,7 @@
  * Memory Buffer (CMB) in bytes.
  *
  * Bits [31:0]  - SIZE: CMB size in bytes
- *                Reset: ACCEL_BAR4_SIZE
+ *                Reset: ACCEL_BAR0_SIZE
  */
 #define ACCEL_REG_CMBSZ     0x0024
 
@@ -349,8 +359,8 @@
 #define ACCEL_ADM_CMD_SET_FEATURES      0x09
 #define ACCEL_ADM_CMD_P2P_SETUP         0x10
 #define ACCEL_ADM_CMD_P2P_TEARDOWN      0x11
-#define ACCEL_ADM_CMD_P2P_QUEUE_SETUP   0x12
-#define ACCEL_ADM_CMD_P2P_QUEUE_TEARDOWN 0x13
+#define ACCEL_ADM_CMD_P2P_RING_SETUP    0x12
+#define ACCEL_ADM_CMD_P2P_RING_TEARDOWN 0x13
 
 /* I/O Command Set */
 #define ACCEL_CMD_LOOPBACK              0x01
@@ -442,87 +452,90 @@
 #define ACCEL_FEAT_NUM_QUEUES           0x07  /* Number of queues */
 #define ACCEL_FEAT_P2P_CONFIG           0x10  /* P2P configuration */
 
-/* ===== P2P Queue Configuration Register (P2QQCFG) - Offset 0x0034 ===== */
+/* ===== P2P Ring Configuration Register (P2RCFG) - Offset 0x0034 ===== */
 /*
- * 32-bit read-only register describing P2P MMIO queue capabilities.
+ * 32-bit read-only register describing P2P ring buffer capabilities.
  *
- * Bits [3:0]   - P2Q_SLOTS: Number of P2P queue pair slots (0-7)
+ * Bits [3:0]   - SLOTS: Number of P2P ring buffer slots (0-7)
  *                Each slot supports one peer device.
  *                Reset: 7
  *
- * Bits [15:4]  - P2Q_SIZE: P2P queue size in entries per queue
- *                Both SQ and CQ use the same size.
- *                Reset: 64
+ * Bits [23:4]  - RING_SIZE: Per-slot ring size in 4KB units
+ *                Reset: 256 (1MB)
  *
- * Bits [31:16] - P2Q_DATA_SIZE: Data region size in 1MB units
- *                Amount of BAR4 CMB space available for data transfers.
- *                Reset: (ACCEL_BAR4_SIZE - ACCEL_P2Q_DATA_OFFSET) / 1MB
+ * Bits [31:24] - Reserved (must be 0)
  */
-#define ACCEL_REG_P2QQCFG               0x0034
+#define ACCEL_REG_P2RCFG                0x0034
 
-#define ACCEL_P2QQCFG_SLOTS_SHIFT       0
-#define ACCEL_P2QQCFG_SLOTS_MASK        0xF
-#define ACCEL_P2QQCFG_SIZE_SHIFT        4
-#define ACCEL_P2QQCFG_SIZE_MASK         0xFFF
-#define ACCEL_P2QQCFG_DATA_SIZE_SHIFT   16
-#define ACCEL_P2QQCFG_DATA_SIZE_MASK    0xFFFF
+#define ACCEL_P2RCFG_SLOTS_SHIFT        0
+#define ACCEL_P2RCFG_SLOTS_MASK         0xF
+#define ACCEL_P2RCFG_RING_SIZE_SHIFT    4
+#define ACCEL_P2RCFG_RING_SIZE_MASK     0xFFFFF
 
-/* ===== P2P Queue Doorbell Registers - Offset 0x4000 ===== */
+/* ===== P2P Ring Doorbell Registers - Offset 0x4000 ===== */
 /*
- * Doorbell registers for P2P MMIO queues between devices.
+ * Doorbell registers for P2P ring buffers between devices.
  * These are written by PEER devices via cross-device MMIO writes
  * (address_space_write to this device's BAR0).
  *
  * Per peer slot (8 bytes per slot):
- *   Offset 0x4000 + slot*8 + 0: Inbound SQ Tail Doorbell (32-bit write-only)
- *     Written by peer after submitting commands to our inbound SQ.
- *     Bits [15:0] = new SQ tail value.
+ *   Offset 0x4000 + slot*8 + 0: Ring Tail Doorbell (32-bit write-only)
+ *     Written by peer after producing messages in our inbound ring.
+ *     Bits [31:0] = new tail byte offset within ring data area.
  *
- *   Offset 0x4000 + slot*8 + 4: Receive CQ Notify Doorbell (32-bit write-only)
- *     Written by peer after pushing CQE to our receive CQ.
- *     Bits [15:0] = new CQ tail value.
+ *   Offset 0x4000 + slot*8 + 4: Reserved
  */
-#define ACCEL_P2Q_DB_BASE               0x4000
-#define ACCEL_P2Q_DB_STRIDE             8
+#define ACCEL_P2R_DB_BASE               0x4000
+#define ACCEL_P2R_DB_STRIDE             8
 
-#define ACCEL_P2Q_SQ_TAIL_DB(slot) \
-    (ACCEL_P2Q_DB_BASE + (slot) * ACCEL_P2Q_DB_STRIDE)
-#define ACCEL_P2Q_CQ_NOTIFY_DB(slot) \
-    (ACCEL_P2Q_DB_BASE + (slot) * ACCEL_P2Q_DB_STRIDE + 4)
+#define ACCEL_P2R_TAIL_DB(slot) \
+    (ACCEL_P2R_DB_BASE + (slot) * ACCEL_P2R_DB_STRIDE)
 
-/* ===== P2P Queue Constants ===== */
-#define ACCEL_P2Q_MAX_SLOTS             7       /* Max peer queue slots */
-#define ACCEL_P2Q_SQ_ENTRIES            64      /* Entries per inbound SQ */
-#define ACCEL_P2Q_CQ_ENTRIES            64      /* Entries per receive CQ */
+/* ===== P2P Ring Constants ===== */
+#define ACCEL_P2R_MAX_SLOTS             7       /* Max peer ring slots */
 
-/* BAR4 layout for P2P queues + CMB data */
-#define ACCEL_P2Q_SQ_OFFSET(slot)       ((slot) * 0x1000)       /* 4KB per SQ */
-#define ACCEL_P2Q_SQ_SIZE               (ACCEL_P2Q_SQ_ENTRIES * 64)  /* 4KB */
-#define ACCEL_P2Q_CQ_BASE               0x8000
-#define ACCEL_P2Q_CQ_OFFSET(slot)       (ACCEL_P2Q_CQ_BASE + (slot) * 0x400) /* 1KB per CQ */
-#define ACCEL_P2Q_CQ_SIZE               (ACCEL_P2Q_CQ_ENTRIES * 16)  /* 1KB */
-#define ACCEL_P2Q_DATA_OFFSET           0xC000  /* Start of CMB data region */
+/* Ring buffer sizes (per slot) */
+#define ACCEL_RING_SIZE                 (1 * 1024 * 1024)  /* 1MB per ring */
+#define ACCEL_RING_HDR_SIZE             64      /* Ring header size in bytes */
+#define ACCEL_RING_DATA_OFFSET          ACCEL_RING_HDR_SIZE
+#define ACCEL_RING_DATA_SIZE            (ACCEL_RING_SIZE - ACCEL_RING_HDR_SIZE)
 
-/* ===== P2P Queue Command Opcodes ===== */
+/* Ring layout within CMB (offsets relative to CMB start) */
+#define ACCEL_RING_OFFSET(slot)         ((slot) * ACCEL_RING_SIZE)
+#define ACCEL_CMB_DATA_OFFSET           (ACCEL_P2R_MAX_SLOTS * ACCEL_RING_SIZE)
+
+/* ===== Ring Message Format ===== */
 /*
- * Commands submitted via P2P MMIO queues (device-to-device).
- * These use a separate opcode range (0x80+) from host I/O commands.
+ * Variable-length messages in ring data area.
+ * Each message is 8-byte aligned.
+ *
+ * struct AccelRingMsg {
+ *     uint16_t type;      // message type
+ *     uint16_t flags;     // per-message flags
+ *     uint32_t length;    // total length including header (8-byte aligned)
+ *     uint8_t  payload[]; // variable payload
+ * };
  */
-#define ACCEL_P2Q_CMD_MMIO_WRITE        0x80  /* Transfer data: submitter -> target */
-#define ACCEL_P2Q_CMD_MMIO_READ         0x81  /* Transfer data: target -> submitter */
-#define ACCEL_P2Q_CMD_LOOPBACK          0x82  /* Target loopback test */
+#define ACCEL_RING_MSG_HDR_SIZE         8       /* Minimum message size */
+#define ACCEL_RING_MSG_ALIGN            8       /* Message alignment */
 
-/* ===== P2P Queue Status Codes ===== */
-#define ACCEL_SC_P2Q_INVALID_SLOT       0x50  /* Invalid P2P queue slot */
-#define ACCEL_SC_P2Q_SLOT_ACTIVE        0x51  /* Slot already in use */
-#define ACCEL_SC_P2Q_PEER_MISMATCH      0x52  /* Peer device type mismatch */
-#define ACCEL_SC_P2Q_DATA_RANGE         0x53  /* Data offset out of range */
-#define ACCEL_SC_P2Q_XFER_ERROR         0x54  /* Cross-device MMIO transfer error */
+/* Ring message types */
+#define ACCEL_RING_MSG_DATA             0x01    /* Data payload follows */
+#define ACCEL_RING_MSG_NOTIFY           0x02    /* Signal/fence, no payload */
+#define ACCEL_RING_MSG_STATUS           0x03    /* Status/completion response */
+
+/* ===== P2P Ring Status Codes ===== */
+#define ACCEL_SC_P2R_INVALID_SLOT       0x50  /* Invalid ring slot */
+#define ACCEL_SC_P2R_SLOT_ACTIVE        0x51  /* Slot already in use */
+#define ACCEL_SC_P2R_PEER_MISMATCH      0x52  /* Peer device type mismatch */
+
+/* CMB (Controller Memory Buffer) within BAR0 */
+#define ACCEL_CMB_OFFSET        0x2000              /* CMB starts at 8KB into BAR0 */
+#define ACCEL_CMB_SIZE          0x100000            /* CMB byte size */
 
 /* ===== BAR Sizes and Offsets ===== */
-#define ACCEL_BAR0_SIZE     (64 * 1024)   /* 64KB - Controller registers */
-#define ACCEL_BAR2_SIZE     (16 * 1024)   /* 16KB - MSI-X table/PBA */
-#define ACCEL_BAR4_SIZE     (64 * 1024 * 1024)  /* 64MB - P2P queues + CMB */
+#define ACCEL_BAR0_SIZE         (ACCEL_CMB_OFFSET + ACCEL_CMB_SIZE)  /* MMIO + CMB container */
+#define ACCEL_BAR2_SIZE         (16 * 1024)         /* 16KB - MSI-X table/PBA */
 
 /* MSI-X table/PBA offsets within BAR2 */
 #define ACCEL_MSIX_TABLE_OFFSET     0x0000  /* MSI-X table at BAR2 offset 0 */

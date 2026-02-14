@@ -808,11 +808,11 @@ uint16_t accel_admin_cmd(PCIeAccel *n, AccelRequest *req)
     case ACCEL_ADM_CMD_P2P_SETUP:
         return accel_cmd_p2p_setup(n, req);
 
-    case ACCEL_ADM_CMD_P2P_QUEUE_SETUP:
-        return accel_cmd_p2p_queue_setup(n, req);
+    case ACCEL_ADM_CMD_P2P_RING_SETUP:
+        return accel_cmd_p2p_ring_setup(n, req);
 
-    case ACCEL_ADM_CMD_P2P_QUEUE_TEARDOWN:
-        return accel_cmd_p2p_queue_teardown(n, req);
+    case ACCEL_ADM_CMD_P2P_RING_TEARDOWN:
+        return accel_cmd_p2p_ring_teardown(n, req);
 
     default:
         trace_pcie_accel_err_invalid_cmd(0, cmd->opcode);
@@ -1080,8 +1080,8 @@ static uint64_t accel_mmio_read(void *opaque, hwaddr addr, unsigned size)
         val = n->bar.p2pcfg;
         break;
 
-    case ACCEL_REG_P2QQCFG:
-        val = n->p2p.p2qqcfg;
+    case ACCEL_REG_P2RCFG:
+        val = n->p2p.p2rcfg;
         break;
 
     case ACCEL_REG_INTCOAL:
@@ -1122,10 +1122,10 @@ static void accel_mmio_write(void *opaque, hwaddr addr, uint64_t data,
 
     trace_pcie_accel_mmio_write(addr, data, size);
 
-    /* Handle P2P queue doorbell writes (0x4000+) */
-    if (addr >= ACCEL_P2Q_DB_BASE &&
-        addr < ACCEL_P2Q_DB_BASE + ACCEL_P2Q_MAX_SLOTS * ACCEL_P2Q_DB_STRIDE) {
-        accel_p2p_queue_doorbell(n, addr - ACCEL_P2Q_DB_BASE, data);
+    /* Handle P2P ring doorbell writes (0x4000+) */
+    if (addr >= ACCEL_P2R_DB_BASE &&
+        addr < ACCEL_P2R_DB_BASE + ACCEL_P2R_MAX_SLOTS * ACCEL_P2R_DB_STRIDE) {
+        accel_p2p_ring_doorbell(n, addr - ACCEL_P2R_DB_BASE, data);
         return;
     }
 
@@ -1196,7 +1196,7 @@ static void accel_mmio_write(void *opaque, hwaddr addr, uint64_t data,
     case ACCEL_REG_CMBOFF:
     case ACCEL_REG_CMBSZ:
     case ACCEL_REG_P2PCFG:
-    case ACCEL_REG_P2QQCFG:
+    case ACCEL_REG_P2RCFG:
     case ACCEL_REG_DEVSTAT:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "pcie-accel: Write to read-only register: 0x%" HWADDR_PRIx "\n",
@@ -1389,8 +1389,8 @@ void pcie_accel_reset(DeviceState *dev)
     n->p2p.num_peers = 0;
     QTAILQ_INIT(&n->p2p.peer_list);
 
-    /* Reset P2P MMIO queues */
-    accel_p2p_queue_reset(n);
+    /* Reset P2P ring buffers */
+    accel_p2p_ring_reset(n);
 }
 
 /**
@@ -1419,12 +1419,23 @@ void pcie_accel_realize(PCIDevice *pci_dev, Error **errp)
         pcie_dev_ser_num_init(pci_dev, 0x150, 0x1234567890ABCDEF);
     }
 
-    /* Initialize BAR0 (controller registers) */
+    /* Initialize BAR0 as MMIO with CMB RAM sub-region */
     memory_region_init_io(&n->bar0, OBJECT(n), &accel_mmio_ops, n,
                           "pcie-accel-bar0", ACCEL_BAR0_SIZE);
+
+    /* CMB RAM sub-region overlays at ACCEL_CMB_OFFSET */
+    memory_region_init_ram(&n->cmb, OBJECT(n), "pcie-accel-cmb",
+                           ACCEL_CMB_SIZE, &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
+        return;
+    }
+    memory_region_add_subregion(&n->bar0, ACCEL_CMB_OFFSET, &n->cmb);
+
     pci_register_bar(pci_dev, 0,
                      PCI_BASE_ADDRESS_SPACE_MEMORY |
-                     PCI_BASE_ADDRESS_MEM_TYPE_64,
+                     PCI_BASE_ADDRESS_MEM_TYPE_64 |
+                     PCI_BASE_ADDRESS_MEM_PREFETCH,
                      &n->bar0);
 
     /* Initialize BAR2 (MSI-X) */
@@ -1434,19 +1445,6 @@ void pcie_accel_realize(PCIDevice *pci_dev, Error **errp)
                      PCI_BASE_ADDRESS_SPACE_MEMORY |
                      PCI_BASE_ADDRESS_MEM_TYPE_32,
                      &n->msix_bar);
-
-    /* Initialize BAR4 (P2P queues + CMB RAM) */
-    memory_region_init_ram(&n->bar4, OBJECT(n), "pcie-accel-bar4",
-                           ACCEL_BAR4_SIZE, &local_err);
-    if (local_err) {
-        error_propagate(errp, local_err);
-        return;
-    }
-    pci_register_bar(pci_dev, 4,
-                     PCI_BASE_ADDRESS_SPACE_MEMORY |
-                     PCI_BASE_ADDRESS_MEM_TYPE_64 |
-                     PCI_BASE_ADDRESS_MEM_PREFETCH,
-                     &n->bar4);
 
     ret = msix_init(pci_dev, n->max_ioqpairs + 1,
                     &n->msix_bar, 2, ACCEL_MSIX_TABLE_OFFSET,
@@ -1465,25 +1463,25 @@ void pcie_accel_realize(PCIDevice *pci_dev, Error **errp)
                  (1ULL << ACCEL_CAP_SVA_SHIFT) |           /* PASID/SVA */
                  (1ULL << ACCEL_CAP_PRPL_SHIFT) |          /* PRPL DMA */
                  (1ULL << ACCEL_CAP_SGL_SHIFT) |           /* SGL DMA */
-                 (0xCULL << ACCEL_CAP_P2P_CH_BS_SHIFT) |  /* 4KB channel buf */
+                 (0x8ULL << ACCEL_CAP_P2P_CH_BS_SHIFT) |  /* 2^8 x 4KB P2P channel buf */
                  ((uint64_t)ACCEL_SQES << ACCEL_CAP_SQS_SHIFT) |   /* 64B SQE */
                  ((uint64_t)ACCEL_CQES << ACCEL_CAP_CQS_SHIFT) |   /* 16B CQE */
                  (12ULL << ACCEL_CAP_DEPTH_SHIFT) |        /* 2^12=4096 entries */
-                 (8ULL << ACCEL_CAP_MAXQ_SHIFT);           /* 2^8=256 pairs */
+                 (8ULL << ACCEL_CAP_MAXQ_SHIFT) |          /* 2^8=256 pairs */
+                 (4ULL << ACCEL_CAP_MAXR_SHIFT);           /* 2^4=16 ring bufs */
 
     /* Initialize P2P configuration */
     n->bar.p2pcfg = (n->p2p.max_peers << ACCEL_P2PCFG_MAX_DEVICES_SHIFT) |
                     (n->p2p.max_xfers_per_peer << ACCEL_P2PCFG_MAX_XFERS_SHIFT);
 
     /* Initialize CMB offset and size registers */
-    n->bar.cmboff = ACCEL_P2Q_DATA_OFFSET;
-    n->bar.cmbsz = ACCEL_BAR4_SIZE;
+    n->bar.cmboff = ACCEL_CMB_OFFSET;
+    n->bar.cmbsz = ACCEL_BAR0_SIZE;
 
-    /* Initialize P2P Queue configuration */
-    uint32_t p2q_data_mb = (ACCEL_BAR4_SIZE - ACCEL_P2Q_DATA_OFFSET) / (1ULL << 20);
-    n->p2p.p2qqcfg = (ACCEL_P2Q_MAX_SLOTS << ACCEL_P2QQCFG_SLOTS_SHIFT) |
-                     (ACCEL_P2Q_SQ_ENTRIES << ACCEL_P2QQCFG_SIZE_SHIFT) |
-                     (p2q_data_mb << ACCEL_P2QQCFG_DATA_SIZE_SHIFT);
+    /* Initialize P2P Ring configuration */
+    uint32_t ring_size_4k = ACCEL_RING_SIZE / 4096;
+    n->p2p.p2rcfg = (ACCEL_P2R_MAX_SLOTS << ACCEL_P2RCFG_SLOTS_SHIFT) |
+                    (ring_size_4k << ACCEL_P2RCFG_RING_SIZE_SHIFT);
 
     /* Initialize page size */
     n->page_size = 4096;
@@ -1518,8 +1516,8 @@ void pcie_accel_exit(PCIDevice *pci_dev)
 {
     PCIeAccel *n = PCIE_ACCEL(pci_dev);
 
-    /* Cleanup P2P MMIO queues */
-    accel_p2p_queue_cleanup(n);
+    /* Cleanup P2P ring buffers */
+    accel_p2p_ring_cleanup(n);
 
     /* Free all I/O queues */
     for (int i = 1; i <= n->max_ioqpairs; i++) {

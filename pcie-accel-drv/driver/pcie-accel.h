@@ -48,10 +48,10 @@
 #define ACCEL_REG_P2PCFG	0x0028
 #define ACCEL_REG_INTCOAL	0x002C
 #define ACCEL_REG_DEVSTAT	0x0030
-#define ACCEL_REG_P2QQCFG	0x0034
+#define ACCEL_REG_P2RCFG	0x0034
 #define ACCEL_REG_DOORBELL	0x1000
-#define ACCEL_P2Q_DB_BASE	0x4000
-#define ACCEL_P2Q_DB_STRIDE	8
+#define ACCEL_P2R_DB_BASE	0x4000
+#define ACCEL_P2R_DB_STRIDE	8
 
 /* Command entry and completion entry sizes */
 #define ACCEL_SQES		6	/* 2^6 = 64 bytes */
@@ -66,26 +66,36 @@
 #define ACCEL_ADM_CMD_CREATE_CQ		0x05
 #define ACCEL_ADM_CMD_IDENTIFY		0x06
 #define ACCEL_ADM_CMD_P2P_SETUP		0x10
-#define ACCEL_ADM_CMD_P2P_QUEUE_SETUP	0x12
-#define ACCEL_ADM_CMD_P2P_QUEUE_TEARDOWN 0x13
+#define ACCEL_ADM_CMD_P2P_RING_SETUP	0x12
+#define ACCEL_ADM_CMD_P2P_RING_TEARDOWN	0x13
 
 #define ACCEL_CMD_LOOPBACK		0x01
 #define ACCEL_CMD_P2P_WRITE		0x02
 #define ACCEL_CMD_P2P_READ		0x03
 
-/* P2P MMIO Queue command opcodes (device-to-device) */
-#define ACCEL_P2Q_CMD_MMIO_WRITE	0x80
-#define ACCEL_P2Q_CMD_MMIO_READ		0x81
-#define ACCEL_P2Q_CMD_LOOPBACK		0x82
+/* P2P Ring Buffer constants */
+#define ACCEL_P2R_MAX_SLOTS		7
+#define ACCEL_RING_SIZE			(1 * 1024 * 1024)
+#define ACCEL_RING_HDR_SIZE		64
+#define ACCEL_RING_DATA_OFFSET		ACCEL_RING_HDR_SIZE
+#define ACCEL_RING_DATA_SIZE		(ACCEL_RING_SIZE - ACCEL_RING_HDR_SIZE)
+#define ACCEL_RING_OFFSET(slot)		((slot) * ACCEL_RING_SIZE)
+#define ACCEL_CMB_OFFSET		0x10000
+#define ACCEL_CMB_DATA_OFFSET		(ACCEL_P2R_MAX_SLOTS * ACCEL_RING_SIZE)
 
-/* P2P Queue BAR4 CMB layout */
-#define ACCEL_P2Q_MAX_SLOTS		7
-#define ACCEL_P2Q_SQ_ENTRIES		64
-#define ACCEL_P2Q_CQ_ENTRIES		64
-#define ACCEL_P2Q_SQ_OFFSET(slot)	((slot) * 0x1000)
-#define ACCEL_P2Q_CQ_BASE		0x8000
-#define ACCEL_P2Q_CQ_OFFSET(slot)	(ACCEL_P2Q_CQ_BASE + (slot) * 0x400)
-#define ACCEL_P2Q_DATA_OFFSET		0xC000
+/* Ring message types */
+#define ACCEL_RING_MSG_HDR_SIZE		8
+#define ACCEL_RING_MSG_ALIGN		8
+#define ACCEL_RING_MSG_DATA		0x01
+#define ACCEL_RING_MSG_NOTIFY		0x02
+#define ACCEL_RING_MSG_STATUS		0x03
+
+/* Ring message header */
+struct accel_ring_msg {
+	__le16	type;
+	__le16	flags;
+	__le32	length;		/* Total including header, 8-byte aligned */
+} __packed;
 
 /* Status codes */
 #define ACCEL_SC_SUCCESS		0x00
@@ -101,7 +111,7 @@ enum accel_uring_cmd_op {
 	ACCEL_URING_CMD_SETUP_P2P,	/* Setup P2P peer */
 	ACCEL_URING_CMD_GET_STATS,	/* Get statistics */
 	ACCEL_URING_CMD_ADMIN,		/* Admin command */
-	ACCEL_URING_CMD_P2P_QUEUE_SETUP, /* Setup P2P MMIO queue */
+	ACCEL_URING_CMD_P2P_RING_SETUP,	/* Setup P2P ring buffer */
 };
 
 /* Forward declarations */
@@ -294,9 +304,9 @@ struct accel_queue {
 struct accel_p2p_peer {
 	struct pci_dev *pdev;
 	u16 bdf;
-	void __iomem *mem;		/* BAR4 CMB mapping */
-	resource_size_t mem_size;	/* BAR4 CMB size */
-	resource_size_t mem_phys;	/* BAR4 CMB physical address */
+	void __iomem *mem;		/* BAR0 CMB mapping */
+	resource_size_t mem_size;	/* BAR0 CMB size */
+	resource_size_t mem_phys;	/* BAR0 CMB physical address */
 	struct list_head list;
 };
 
@@ -304,21 +314,18 @@ struct accel_p2p_peer {
  * struct accel_dev - Main device structure
  */
 /**
- * struct accel_p2p_queue_setup - P2P MMIO queue setup parameters
+ * struct accel_p2p_ring_setup - P2P ring buffer setup parameters
  */
-struct accel_p2p_queue_setup {
+struct accel_p2p_ring_setup {
 	__u16	peer_bdf;		/* Peer device BDF */
 	__u8	slot;			/* Slot in our device (0-6) */
 	__u8	peer_slot;		/* Our slot in peer's device (0-6) */
 	__u64	peer_bar0;		/* Peer's BAR0 physical address */
-	__u64	peer_bar4;		/* Peer's BAR4 physical address */
 };
 
 struct accel_dev {
 	struct pci_dev *pdev;
-	void __iomem *bar0;			/* BAR0: Controller registers */
-	void __iomem *bar4;			/* BAR4: P2P queues + CMB */
-	resource_size_t bar4_size;		/* BAR4 CMB size */
+	void __iomem *bar0;			/* BAR0: Registers + CMB */
 
 	struct cdev cdev;
 	dev_t devt;
@@ -356,7 +363,7 @@ struct accel_dev {
 #define ACCEL_IOC_SUBMIT_CMD	_IOWR(ACCEL_IOC_MAGIC, 3, struct accel_uring_cmd)
 #define ACCEL_IOC_SETUP_P2P	_IOW(ACCEL_IOC_MAGIC, 4, struct accel_uring_cmd)
 #define ACCEL_IOC_GET_STATS	_IOR(ACCEL_IOC_MAGIC, 5, struct accel_uring_result)
-#define ACCEL_IOC_P2P_QUEUE_SETUP _IOW(ACCEL_IOC_MAGIC, 6, struct accel_p2p_queue_setup)
+#define ACCEL_IOC_P2P_RING_SETUP _IOW(ACCEL_IOC_MAGIC, 6, struct accel_p2p_ring_setup)
 
 /* Helper functions */
 static inline u32 accel_reg_read32(struct accel_dev *dev, u32 offset)
@@ -428,8 +435,8 @@ void accel_disable_pasid(struct accel_dev *dev);
 int accel_p2p_dma_map(struct accel_dev *dev, struct accel_p2p_peer *peer,
 		      void *addr, size_t len, dma_addr_t *dma_addr);
 void accel_p2p_dma_unmap(struct accel_dev *dev, dma_addr_t dma_addr, size_t len);
-int accel_p2p_queue_setup(struct accel_dev *dev,
-			  struct accel_p2p_queue_setup *params);
+int accel_p2p_ring_setup(struct accel_dev *dev,
+			 struct accel_p2p_ring_setup *params);
 
 /* Request management */
 struct accel_request *accel_alloc_request(struct accel_queue *queue);

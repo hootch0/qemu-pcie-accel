@@ -846,17 +846,18 @@ void accel_cancel_batch(struct accel_device *dev)
 }
 
 /*
- * ===== P2P MMIO Queue Setup =====
+ * ===== P2P Ring Buffer Setup =====
  */
 
 /**
- * accel_p2p_queue_setup - Issue admin command to set up P2P queue pair
+ * accel_p2p_ring_setup - Issue admin command to set up P2P ring buffer
  *
- * The host orchestrates P2P queue setup between devices. After setup,
- * the devices exchange commands directly via MMIO without host involvement.
+ * The host orchestrates P2P ring setup between devices. After setup,
+ * the devices exchange messages directly via ring buffers without host
+ * involvement.
  */
-int accel_p2p_queue_setup(struct accel_device *dev, uint16_t peer_bdf,
-                          uint8_t slot, uint8_t peer_slot)
+int accel_p2p_ring_setup(struct accel_device *dev, uint16_t peer_bdf,
+                         uint8_t slot, uint8_t peer_slot)
 {
     struct accel_cmd cmd = {0};
     struct accel_cqe cqe;
@@ -864,19 +865,19 @@ int accel_p2p_queue_setup(struct accel_device *dev, uint16_t peer_bdf,
     if (!dev)
         return ACCEL_ERR_INVAL;
 
-    cmd.opcode = ACCEL_ADM_CMD_P2P_QUEUE_SETUP;
+    cmd.opcode = ACCEL_ADM_CMD_P2P_RING_SETUP;
     cmd.dw.admin.cdw10 = (peer_bdf & 0xFFFF) |
                          ((slot & 0xF) << 16) |
                          ((peer_slot & 0xF) << 20);
-    /* BAR addresses left as 0 - driver resolves them from PCI config */
+    /* BAR0 address left as 0 - driver resolves from PCI config */
 
     return accel_submit_cmd(dev, 0, &cmd, &cqe, 5000);
 }
 
 /**
- * accel_p2p_queue_teardown - Issue admin command to tear down a P2P queue pair
+ * accel_p2p_ring_teardown - Issue admin command to tear down a P2P ring buffer
  */
-int accel_p2p_queue_teardown(struct accel_device *dev, uint8_t slot)
+int accel_p2p_ring_teardown(struct accel_device *dev, uint8_t slot)
 {
     struct accel_cmd cmd = {0};
     struct accel_cqe cqe;
@@ -884,7 +885,7 @@ int accel_p2p_queue_teardown(struct accel_device *dev, uint8_t slot)
     if (!dev)
         return ACCEL_ERR_INVAL;
 
-    cmd.opcode = ACCEL_ADM_CMD_P2P_QUEUE_TEARDOWN;
+    cmd.opcode = ACCEL_ADM_CMD_P2P_RING_TEARDOWN;
     cmd.dw.admin.cdw10 = slot & 0xF;
 
     return accel_submit_cmd(dev, 0, &cmd, &cqe, 5000);

@@ -80,8 +80,8 @@ extern "C" {
 #define ACCEL_ADM_CMD_CREATE_CQ     0x05
 #define ACCEL_ADM_CMD_IDENTIFY      0x06
 #define ACCEL_ADM_CMD_P2P_SETUP     0x10
-#define ACCEL_ADM_CMD_P2P_QUEUE_SETUP 0x12
-#define ACCEL_ADM_CMD_P2P_QUEUE_TEARDOWN 0x13
+#define ACCEL_ADM_CMD_P2P_RING_SETUP 0x12
+#define ACCEL_ADM_CMD_P2P_RING_TEARDOWN 0x13
 
 /* I/O commands */
 #define ACCEL_CMD_LOOPBACK          0x01
@@ -335,12 +335,12 @@ int accel_loopback(struct accel_device *dev, uint16_t qid,
  * @qid: Queue ID
  * @peer_bdf: Target peer BDF
  * @local_data: Local data buffer (source)
- * @peer_addr: Offset within peer's BAR4 CMB memory (destination)
+ * @peer_addr: Offset within peer's CMB memory (destination)
  * @length: Transfer length in bytes
  *
- * Writes data from local host memory to the peer device's BAR4 CMB
+ * Writes data from local host memory to the peer device's CMB
  * memory region. The peer_addr parameter is an offset within the peer's
- * BAR4 CMB, not an absolute address.
+ * CMB, not an absolute address.
  *
  * Returns: ACCEL_SUCCESS or error code
  */
@@ -354,12 +354,12 @@ int accel_p2p_write(struct accel_device *dev, uint16_t qid,
  * @qid: Queue ID
  * @peer_bdf: Source peer BDF
  * @local_data: Local data buffer (destination)
- * @peer_addr: Offset within peer's BAR4 CMB memory (source)
+ * @peer_addr: Offset within peer's CMB memory (source)
  * @length: Transfer length in bytes
  *
- * Reads data from the peer device's BAR4 CMB memory region to local
+ * Reads data from the peer device's CMB memory region to local
  * host memory. The peer_addr parameter is an offset within the peer's
- * BAR4 CMB, not an absolute address.
+ * CMB, not an absolute address.
  *
  * Returns: ACCEL_SUCCESS or error code
  */
@@ -407,12 +407,12 @@ int accel_async_loopback(struct accel_device *dev, uint16_t qid,
  * @qid: Queue ID
  * @peer_bdf: Target peer BDF
  * @local_data: Local data buffer
- * @peer_addr: Offset within peer's BAR4 CMB memory
+ * @peer_addr: Offset within peer's CMB memory
  * @length: Transfer length
  * @token: Token for tracking
  *
  * Async version of accel_p2p_write. The peer_addr is an offset within
- * the peer device's BAR4 CMB memory region.
+ * the peer device's CMB memory region.
  *
  * Returns: ACCEL_SUCCESS or error code
  */
@@ -427,12 +427,12 @@ int accel_async_p2p_write(struct accel_device *dev, uint16_t qid,
  * @qid: Queue ID
  * @peer_bdf: Source peer BDF
  * @local_data: Local data buffer
- * @peer_addr: Offset within peer's BAR4 CMB memory
+ * @peer_addr: Offset within peer's CMB memory
  * @length: Transfer length
  * @token: Token for tracking
  *
  * Async version of accel_p2p_read. The peer_addr is an offset within
- * the peer device's BAR4 CMB memory region.
+ * the peer device's CMB memory region.
  *
  * Returns: ACCEL_SUCCESS or error code
  */
@@ -555,30 +555,30 @@ void accel_cancel_batch(struct accel_device *dev);
 int accel_setup_p2p_peer(struct accel_device *dev, uint16_t peer_bdf);
 
 /**
- * accel_p2p_queue_setup - Set up P2P MMIO queue pair via admin command
+ * accel_p2p_ring_setup - Set up P2P ring buffer via admin command
  * @dev: Device handle
  * @peer_bdf: Peer device BDF (bus << 8 | devfn)
  * @slot: Slot for this peer in our device (0-6)
  * @peer_slot: Our slot in the peer's device (0-6)
  *
- * Issues admin command to configure a P2P MMIO queue pair on the device.
- * The driver resolves peer BAR addresses from PCI config space.
- * After setup, the devices exchange commands directly via MMIO without
- * host involvement.
+ * Issues admin command to configure a P2P ring buffer slot on the device.
+ * The driver resolves peer BAR0 address from PCI config space.
+ * After setup, the devices exchange messages directly via ring buffers
+ * in BAR0 CMB without host involvement.
  *
  * Returns: ACCEL_SUCCESS or error code
  */
-int accel_p2p_queue_setup(struct accel_device *dev, uint16_t peer_bdf,
-                          uint8_t slot, uint8_t peer_slot);
+int accel_p2p_ring_setup(struct accel_device *dev, uint16_t peer_bdf,
+                         uint8_t slot, uint8_t peer_slot);
 
 /**
- * accel_p2p_queue_teardown - Tear down a P2P MMIO queue pair
+ * accel_p2p_ring_teardown - Tear down a P2P ring buffer
  * @dev: Device handle
  * @slot: Slot number to tear down (0-6)
  *
  * Returns: ACCEL_SUCCESS or error code
  */
-int accel_p2p_queue_teardown(struct accel_device *dev, uint8_t slot);
+int accel_p2p_ring_teardown(struct accel_device *dev, uint8_t slot);
 
 /*
  * ----- Memory Mapping -----

@@ -585,19 +585,6 @@ static int accel_pci_probe(struct pci_dev *pdev,
 		goto err_release_regions;
 	}
 
-	/* Map BAR4 (P2P queues + CMB) if present */
-	if (pci_resource_len(pdev, 4)) {
-		dev->bar4 = pci_iomap(pdev, 4, 0);
-		if (!dev->bar4) {
-			dev_warn(&pdev->dev, "Failed to map BAR4\n");
-		} else {
-			dev->bar4_size = pci_resource_len(pdev, 4);
-			dev_info(&pdev->dev, "BAR4 mapped: %pR (%zu bytes)\n",
-				 &pdev->resource[4],
-				 (size_t)dev->bar4_size);
-		}
-	}
-
 	/* Log device capabilities */
 	{
 		u64 cap = accel_reg_read64(dev, ACCEL_REG_CAP);
@@ -662,8 +649,6 @@ err_free_ida:
 	ida_simple_remove(&accel_ida, dev_id);
 err_free_msix:
 	accel_free_msix(dev);
-	if (dev->bar4)
-		pci_iounmap(pdev, dev->bar4);
 	pci_iounmap(pdev, dev->bar0);
 err_release_regions:
 	pci_release_regions(pdev);
@@ -716,8 +701,6 @@ static void accel_pci_remove(struct pci_dev *pdev)
 	accel_free_msix(dev);
 
 	/* Unmap BARs */
-	if (dev->bar4)
-		pci_iounmap(pdev, dev->bar4);
 	if (dev->bar0)
 		pci_iounmap(pdev, dev->bar0);
 
