@@ -1068,12 +1068,8 @@ static uint64_t accel_mmio_read(void *opaque, hwaddr addr, unsigned size)
         val = n->bar.acq;
         break;
 
-    case ACCEL_REG_CMBOFF:
-        val = n->bar.cmboff;
-        break;
-
-    case ACCEL_REG_CMBSZ:
-        val = n->bar.cmbsz;
+    case ACCEL_REG_CMBBAR:
+        val = n->bar.cmbbar;
         break;
 
     case ACCEL_REG_P2PCFG:
@@ -1193,8 +1189,7 @@ static void accel_mmio_write(void *opaque, hwaddr addr, uint64_t data,
 
     case ACCEL_REG_CAP:
     case ACCEL_REG_CSTS:
-    case ACCEL_REG_CMBOFF:
-    case ACCEL_REG_CMBSZ:
+    case ACCEL_REG_CMBBAR:
     case ACCEL_REG_P2PCFG:
     case ACCEL_REG_P2RCFG:
     case ACCEL_REG_DEVSTAT:
@@ -1419,36 +1414,38 @@ void pcie_accel_realize(PCIDevice *pci_dev, Error **errp)
         pcie_dev_ser_num_init(pci_dev, 0x150, 0x1234567890ABCDEF);
     }
 
-    /* Initialize BAR0 as MMIO with CMB RAM sub-region */
+    /* Initialize BAR0 (MMIO registers + doorbells) */
     memory_region_init_io(&n->bar0, OBJECT(n), &accel_mmio_ops, n,
                           "pcie-accel-bar0", ACCEL_BAR0_SIZE);
+    pci_register_bar(pci_dev, 0,
+                     PCI_BASE_ADDRESS_SPACE_MEMORY |
+                     PCI_BASE_ADDRESS_MEM_TYPE_64,
+                     &n->bar0);
 
-    /* CMB RAM sub-region overlays at ACCEL_CMB_OFFSET */
+    /* Initialize BAR2 (CMB - Controller Memory Buffer) */
     memory_region_init_ram(&n->cmb, OBJECT(n), "pcie-accel-cmb",
                            ACCEL_CMB_SIZE, &local_err);
     if (local_err) {
         error_propagate(errp, local_err);
         return;
     }
-    memory_region_add_subregion(&n->bar0, ACCEL_CMB_OFFSET, &n->cmb);
-
-    pci_register_bar(pci_dev, 0,
+    pci_register_bar(pci_dev, 2,
                      PCI_BASE_ADDRESS_SPACE_MEMORY |
                      PCI_BASE_ADDRESS_MEM_TYPE_64 |
                      PCI_BASE_ADDRESS_MEM_PREFETCH,
-                     &n->bar0);
+                     &n->cmb);
 
-    /* Initialize BAR2 (MSI-X) */
+    /* Initialize BAR4 (MSI-X) */
     memory_region_init(&n->msix_bar, OBJECT(n), "pcie-accel-msix",
-                       ACCEL_BAR2_SIZE);
-    pci_register_bar(pci_dev, 2,
+                       ACCEL_BAR4_SIZE);
+    pci_register_bar(pci_dev, 4,
                      PCI_BASE_ADDRESS_SPACE_MEMORY |
                      PCI_BASE_ADDRESS_MEM_TYPE_32,
                      &n->msix_bar);
 
     ret = msix_init(pci_dev, n->max_ioqpairs + 1,
-                    &n->msix_bar, 2, ACCEL_MSIX_TABLE_OFFSET,
-                    &n->msix_bar, 2, ACCEL_MSIX_PBA_OFFSET,
+                    &n->msix_bar, 4, ACCEL_MSIX_TABLE_OFFSET,
+                    &n->msix_bar, 4, ACCEL_MSIX_PBA_OFFSET,
                     0x00, &local_err);
     if (ret < 0) {
         error_propagate(errp, local_err);
@@ -1474,9 +1471,8 @@ void pcie_accel_realize(PCIDevice *pci_dev, Error **errp)
     n->bar.p2pcfg = (n->p2p.max_peers << ACCEL_P2PCFG_MAX_DEVICES_SHIFT) |
                     (n->p2p.max_xfers_per_peer << ACCEL_P2PCFG_MAX_XFERS_SHIFT);
 
-    /* Initialize CMB offset and size registers */
-    n->bar.cmboff = ACCEL_CMB_OFFSET;
-    n->bar.cmbsz = ACCEL_BAR0_SIZE;
+    /* Initialize CMB BAR register (CMB is in BAR2) */
+    n->bar.cmbbar = 2;
 
     /* Initialize P2P Ring configuration */
     uint32_t ring_size_4k = ACCEL_RING_SIZE / 4096;

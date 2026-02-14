@@ -564,7 +564,7 @@ int accel_setup_p2p_peer(struct accel_device *dev, uint16_t peer_bdf);
  * Issues admin command to configure a P2P ring buffer slot on the device.
  * The driver resolves peer BAR0 address from PCI config space.
  * After setup, the devices exchange messages directly via ring buffers
- * in BAR0 CMB without host involvement.
+ * in BAR2 CMB without host involvement.
  *
  * Returns: ACCEL_SUCCESS or error code
  */

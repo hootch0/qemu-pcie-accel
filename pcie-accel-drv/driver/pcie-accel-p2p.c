@@ -165,30 +165,28 @@ int accel_setup_p2p_peer(struct accel_dev *dev, u16 peer_bdf)
 #endif
 
 	/*
-	 * Map the peer's CMB (in BAR0) for P2P transfers.
-	 * CMB starts at ACCEL_CMB_OFFSET within BAR0. BAR0 is a RAM-backed
-	 * region that can be directly accessed for peer-to-peer DMA operations.
+	 * Map the peer's CMB (BAR2) for P2P transfers.
+	 * BAR2 is a RAM-backed region for peer-to-peer DMA operations.
 	 */
-	if (pci_resource_len(peer_pdev, 0) > ACCEL_CMB_OFFSET) {
-		resource_size_t bar0_start = pci_resource_start(peer_pdev, 0);
-		resource_size_t bar0_len = pci_resource_len(peer_pdev, 0);
-		resource_size_t cmb_size = bar0_len - ACCEL_CMB_OFFSET;
+	if (pci_resource_len(peer_pdev, 2) > 0) {
+		resource_size_t bar2_start = pci_resource_start(peer_pdev, 2);
+		resource_size_t cmb_size = pci_resource_len(peer_pdev, 2);
 
-		peer->mem = ioremap(bar0_start + ACCEL_CMB_OFFSET, cmb_size);
+		peer->mem = ioremap(bar2_start, cmb_size);
 		if (peer->mem) {
 			peer->mem_size = cmb_size;
-			peer->mem_phys = bar0_start + ACCEL_CMB_OFFSET;
+			peer->mem_phys = bar2_start;
 			dev_info(&dev->pdev->dev,
-				"P2P: Mapped peer CMB: phys=0x%llx size=%llu\n",
+				"P2P: Mapped peer CMB (BAR2): phys=0x%llx size=%llu\n",
 				(unsigned long long)peer->mem_phys,
 				(unsigned long long)cmb_size);
 		} else {
 			dev_warn(&dev->pdev->dev,
-				"P2P: Failed to map peer CMB\n");
+				"P2P: Failed to map peer CMB (BAR2)\n");
 		}
 	} else {
 		dev_warn(&dev->pdev->dev,
-			"P2P: Peer BAR0 too small for CMB\n");
+			"P2P: Peer BAR2 (CMB) not available\n");
 	}
 
 	/*

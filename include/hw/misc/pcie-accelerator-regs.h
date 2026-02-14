@@ -16,11 +16,11 @@
 #define HW_PCIE_ACCELERATOR_REGS_H
 
 /*
- * ===== Controller Register Map (BAR0 - 64MB container) =====
+ * ===== Controller Register Map =====
  *
- * BAR0 is a 64MB container with two sub-regions:
- *   [0x00000000 - 0x0000FFFF]  MMIO (64KB): registers + doorbells
- *   [0x00010000 - end]         CMB RAM: ring buffers + data
+ * BAR0 (64KB):  MMIO registers + doorbells
+ * BAR2 (CMB):   Controller Memory Buffer (ring buffers + data)
+ * BAR4 (16KB):  MSI-X table/PBA
  *
  * All multi-byte fields are little-endian.
  */
@@ -208,25 +208,17 @@
  */
 #define ACCEL_REG_ACQ       0x0018
 
-/* ===== CMB Offset Register (CMBOFF) - Offset 0x0020 ===== */
+/* ===== CMB BAR Register (CMBBAR) - Offset 0x0020 ===== */
 /*
- * 32-bit read-only register indicating the byte offset of the Controller
- * Memory Buffer (CMB) within BAR0.
+ * 32-bit read-only register indicating which BAR contains the Controller
+ * Memory Buffer (CMB).
  *
- * Bits [31:0]  - OFFSET: CMB byte offset within BAR0
- *                Reset: ACCEL_CMB_OFFSET (0x10000)
- */
-#define ACCEL_REG_CMBOFF    0x0020
-
-/* ===== CMB Size Register (CMBSZ) - Offset 0x0024 ===== */
-/*
- * 32-bit read-only register indicating the size of the Controller
- * Memory Buffer (CMB) in bytes.
+ * Bits [2:0]   - BAR: BAR number containing the CMB
+ *                Reset: 2 (CMB is in BAR2)
  *
- * Bits [31:0]  - SIZE: CMB size in bytes
- *                Reset: ACCEL_BAR0_SIZE
+ * Bits [31:3]  - Reserved (must be 0)
  */
-#define ACCEL_REG_CMBSZ     0x0024
+#define ACCEL_REG_CMBBAR    0x0020
 
 /* ===== P2P Configuration Register (P2PCFG) - Offset 0x0028 ===== */
 /*
@@ -529,17 +521,14 @@
 #define ACCEL_SC_P2R_SLOT_ACTIVE        0x51  /* Slot already in use */
 #define ACCEL_SC_P2R_PEER_MISMATCH      0x52  /* Peer device type mismatch */
 
-/* CMB (Controller Memory Buffer) within BAR0 */
-#define ACCEL_CMB_OFFSET        0x2000              /* CMB starts at 8KB into BAR0 */
-#define ACCEL_CMB_SIZE          0x100000            /* CMB byte size */
+/* ===== BAR Sizes ===== */
+#define ACCEL_BAR0_SIZE         (8 * 1024)         /* 8KB - MMIO registers + doorbells */
+#define ACCEL_CMB_SIZE          (16 * 1024 * 1024)   /* 16MB - Controller Memory Buffer (BAR2) */
+#define ACCEL_BAR4_SIZE         (16 * 1024)         /* 16KB - MSI-X table/PBA */
 
-/* ===== BAR Sizes and Offsets ===== */
-#define ACCEL_BAR0_SIZE         (ACCEL_CMB_OFFSET + ACCEL_CMB_SIZE)  /* MMIO + CMB container */
-#define ACCEL_BAR2_SIZE         (16 * 1024)         /* 16KB - MSI-X table/PBA */
-
-/* MSI-X table/PBA offsets within BAR2 */
-#define ACCEL_MSIX_TABLE_OFFSET     0x0000  /* MSI-X table at BAR2 offset 0 */
-#define ACCEL_MSIX_PBA_OFFSET       0x1000  /* MSI-X PBA at BAR2 offset 4KB */
+/* MSI-X table/PBA offsets within BAR4 */
+#define ACCEL_MSIX_TABLE_OFFSET     0x0000  /* MSI-X table at BAR4 offset 0 */
+#define ACCEL_MSIX_PBA_OFFSET       0x1000  /* MSI-X PBA at BAR4 offset 4KB */
 
 /* ===== Maximum Values ===== */
 #define ACCEL_MAX_IOQPAIRS      256     /* Maximum I/O queue pairs */

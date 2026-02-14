@@ -43,8 +43,7 @@
 #define ACCEL_REG_CSTS		0x000C
 #define ACCEL_REG_ASQ		0x0010
 #define ACCEL_REG_ACQ		0x0018
-#define ACCEL_REG_CMBOFF	0x0020
-#define ACCEL_REG_CMBSZ		0x0024
+#define ACCEL_REG_CMBBAR	0x0020
 #define ACCEL_REG_P2PCFG	0x0028
 #define ACCEL_REG_INTCOAL	0x002C
 #define ACCEL_REG_DEVSTAT	0x0030
@@ -80,7 +79,6 @@
 #define ACCEL_RING_DATA_OFFSET		ACCEL_RING_HDR_SIZE
 #define ACCEL_RING_DATA_SIZE		(ACCEL_RING_SIZE - ACCEL_RING_HDR_SIZE)
 #define ACCEL_RING_OFFSET(slot)		((slot) * ACCEL_RING_SIZE)
-#define ACCEL_CMB_OFFSET		0x10000
 #define ACCEL_CMB_DATA_OFFSET		(ACCEL_P2R_MAX_SLOTS * ACCEL_RING_SIZE)
 
 /* Ring message types */
@@ -304,9 +302,9 @@ struct accel_queue {
 struct accel_p2p_peer {
 	struct pci_dev *pdev;
 	u16 bdf;
-	void __iomem *mem;		/* BAR0 CMB mapping */
-	resource_size_t mem_size;	/* BAR0 CMB size */
-	resource_size_t mem_phys;	/* BAR0 CMB physical address */
+	void __iomem *mem;		/* BAR2 CMB mapping */
+	resource_size_t mem_size;	/* BAR2 CMB size */
+	resource_size_t mem_phys;	/* BAR2 CMB physical address */
 	struct list_head list;
 };
 
@@ -325,7 +323,7 @@ struct accel_p2p_ring_setup {
 
 struct accel_dev {
 	struct pci_dev *pdev;
-	void __iomem *bar0;			/* BAR0: Registers + CMB */
+	void __iomem *bar0;			/* BAR0: MMIO registers */
 
 	struct cdev cdev;
 	dev_t devt;

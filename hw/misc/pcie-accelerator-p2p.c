@@ -597,7 +597,7 @@ void accel_p2p_dump_state(PCIeAccel *n)
  * P2P Ring Buffer Implementation
  *
  * Unidirectional ring buffers for direct device-to-device communication.
- * Each device exposes per-peer inbound rings in its BAR0 CMB (RAM) with
+ * Each device exposes per-peer inbound rings in its BAR2 CMB (RAM) with
  * doorbells in BAR0 MMIO. Cross-device writes use address_space_write().
  *
  * Data flow:

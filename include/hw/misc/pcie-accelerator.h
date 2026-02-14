@@ -275,7 +275,7 @@ QEMU_BUILD_BUG_ON(sizeof(AccelRingMsg) != 8);
  * produce messages into our ring; we consume them. For the reverse direction,
  * we write to the peer's inbound ring.
  *
- * Ring data lives in BAR0 CMB (RAM). Doorbells are in BAR0 MMIO.
+ * Ring data lives in BAR2 CMB (RAM). Doorbells are in BAR0 MMIO.
  * Cross-device communication uses address_space_write() to peer BAR0.
  */
 typedef struct AccelP2PRing {
@@ -310,10 +310,9 @@ struct PCIeAccel {
     PCIDevice parent_obj;
 
     /* Memory Regions */
-    MemoryRegion bar0;                  /* BAR0 container (64MB) */
-    /* bar0 is MMIO; CMB RAM overlays at ACCEL_CMB_OFFSET */
-    MemoryRegion cmb;                   /* CMB RAM sub-region */
-    MemoryRegion msix_bar;              /* MSI-X table/PBA BAR2 (16KB) */
+    MemoryRegion bar0;                  /* BAR0: MMIO registers (64KB) */
+    MemoryRegion cmb;                   /* BAR2: CMB RAM */
+    MemoryRegion msix_bar;              /* BAR4: MSI-X table/PBA (16KB) */
 
     /* Device Registers (in-memory representation of BAR0) */
     struct {
@@ -322,8 +321,7 @@ struct PCIeAccel {
         uint32_t csts;                  /* Status */
         uint64_t asq;                   /* Admin SQ base address */
         uint64_t acq;                   /* Admin CQ base address */
-        uint32_t cmboff;                /* CMB offset within BAR0 */
-        uint32_t cmbsz;                 /* CMB size in bytes */
+        uint32_t cmbbar;                /* CMB BAR number */
         uint32_t p2pcfg;                /* P2P configuration */
         uint32_t intcoal;               /* Interrupt coalescing */
         uint32_t devstat;               /* Device status */
