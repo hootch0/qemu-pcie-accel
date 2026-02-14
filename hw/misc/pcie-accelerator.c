@@ -1072,6 +1072,10 @@ static uint64_t accel_mmio_read(void *opaque, hwaddr addr, unsigned size)
         val = n->bar.cmbbar;
         break;
 
+    case ACCEL_REG_CMBSZ:
+        val = n->bar.cmbsz;
+        break;
+
     case ACCEL_REG_P2PCFG:
         val = n->bar.p2pcfg;
         break;
@@ -1190,6 +1194,7 @@ static void accel_mmio_write(void *opaque, hwaddr addr, uint64_t data,
     case ACCEL_REG_CAP:
     case ACCEL_REG_CSTS:
     case ACCEL_REG_CMBBAR:
+    case ACCEL_REG_CMBSZ:
     case ACCEL_REG_P2PCFG:
     case ACCEL_REG_P2RCFG:
     case ACCEL_REG_DEVSTAT:
@@ -1473,6 +1478,7 @@ void pcie_accel_realize(PCIDevice *pci_dev, Error **errp)
 
     /* Initialize CMB BAR register (CMB is in BAR2) */
     n->bar.cmbbar = 2;
+    n->bar.cmbsz = ACCEL_CMB_SIZE;
 
     /* Initialize P2P Ring configuration */
     uint32_t ring_size_4k = ACCEL_RING_SIZE / 4096;

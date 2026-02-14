@@ -220,6 +220,16 @@
  */
 #define ACCEL_REG_CMBBAR    0x0020
 
+/* ===== CMB Size Register (CMBSZ) - Offset 0x0024 ===== */
+/*
+ * 32-bit read-only register indicating the size of the Controller
+ * Memory Buffer (CMB) in bytes.
+ *
+ * Bits [31:0]  - SIZE: CMB size in bytes
+ *                Reset: ACCEL_CMB_SIZE
+ */
+#define ACCEL_REG_CMBSZ     0x0024
+
 /* ===== P2P Configuration Register (P2PCFG) - Offset 0x0028 ===== */
 /*
  * 32-bit read-only register describing P2P DMA capabilities.

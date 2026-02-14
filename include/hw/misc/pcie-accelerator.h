@@ -322,6 +322,7 @@ struct PCIeAccel {
         uint64_t asq;                   /* Admin SQ base address */
         uint64_t acq;                   /* Admin CQ base address */
         uint32_t cmbbar;                /* CMB BAR number */
+        uint32_t cmbsz;                 /* CMB size in bytes */
         uint32_t p2pcfg;                /* P2P configuration */
         uint32_t intcoal;               /* Interrupt coalescing */
         uint32_t devstat;               /* Device status */
