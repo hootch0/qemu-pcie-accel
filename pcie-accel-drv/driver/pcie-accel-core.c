@@ -187,80 +187,67 @@ static void accel_destroy_req_cache(struct accel_dev *dev)
 }
 
 /*
- * ===== MSI-X Setup =====
+ * ===== Interrupt Vector Setup =====
  *
- * MSI-X provides per-queue interrupt vectors for efficient completion
- * processing without shared interrupt handling overhead.
+ * Uses pci_alloc_irq_vectors() to support both MSI-X and MSI.
+ * MSI-X is preferred for per-queue interrupt vectors; MSI is used
+ * as a fallback when MSI-X is unavailable.
  */
 
 /**
- * accel_setup_msix - Set up MSI-X interrupts
+ * accel_setup_msix - Allocate MSI-X or MSI interrupt vectors
  * @dev: Device structure
  *
- * Allocates MSI-X vectors for admin queue and I/O queues.
+ * Allocates interrupt vectors for admin queue and I/O queues.
  * Vector assignment:
  *   Vector 0: Admin queue completions
  *   Vector 1..N: I/O queue completions (one per queue)
  *
- * MSI-X enables efficient interrupt handling by:
- * - Eliminating shared interrupt overhead
- * - Allowing per-CPU interrupt affinity
- * - Supporting interrupt coalescing per vector
+ * Prefers MSI-X for per-queue vectors, falls back to MSI.
  *
  * Returns: 0 on success, negative error code on failure
  */
 int accel_setup_msix(struct accel_dev *dev)
 {
-	int ret, i;
+	int ret;
 	int nr_vectors;
 
 	/*
 	 * Request one vector for admin queue plus one per I/O queue pair.
 	 * We'll scale down if the device doesn't support that many.
-	 * Maximum of 256 vectors per PCIe spec.
 	 */
 	nr_vectors = min_t(int, max_queues + 1, 256);
 
-	dev->msix_entries = kcalloc(nr_vectors, sizeof(struct msix_entry),
-				    GFP_KERNEL);
-	if (!dev->msix_entries)
-		return -ENOMEM;
-
-	/* Initialize vector entries */
-	for (i = 0; i < nr_vectors; i++)
-		dev->msix_entries[i].entry = i;
-
 	/*
-	 * pci_enable_msix_range() allocates between min_vecs and max_vecs
-	 * vectors. We need at least 1 (admin queue), but prefer more.
+	 * pci_alloc_irq_vectors() tries MSI-X first, then MSI.
+	 * We need at least 1 vector (admin queue), but prefer more.
 	 */
-	ret = pci_enable_msix_range(dev->pdev, dev->msix_entries,
-				    1, nr_vectors);
+	ret = pci_alloc_irq_vectors(dev->pdev, 1, nr_vectors,
+				    PCI_IRQ_MSIX | PCI_IRQ_MSI);
 	if (ret < 0) {
-		dev_err(&dev->pdev->dev, "Failed to enable MSI-X: %d\n", ret);
-		kfree(dev->msix_entries);
-		dev->msix_entries = NULL;
+		dev_err(&dev->pdev->dev,
+			"Failed to allocate IRQ vectors: %d\n", ret);
 		return ret;
 	}
 
 	dev->num_vecs = ret;
-	dev_info(&dev->pdev->dev, "Allocated %d MSI-X vectors\n", dev->num_vecs);
+	dev_info(&dev->pdev->dev, "Allocated %d %s vectors\n",
+		 dev->num_vecs,
+		 dev->pdev->msix_enabled ? "MSI-X" : "MSI");
 
 	return 0;
 }
 
 /**
- * accel_free_msix - Free MSI-X resources
+ * accel_free_msix - Free interrupt vector resources
  * @dev: Device structure
  */
 void accel_free_msix(struct accel_dev *dev)
 {
-	if (dev->msix_entries) {
-		pci_disable_msix(dev->pdev);
-		kfree(dev->msix_entries);
-		dev->msix_entries = NULL;
+	if (dev->num_vecs > 0) {
+		pci_free_irq_vectors(dev->pdev);
+		dev->num_vecs = 0;
 	}
-	dev->num_vecs = 0;
 }
 
 /*
@@ -352,7 +339,7 @@ int accel_init_admin_queue(struct accel_dev *dev)
 
 	/* Request interrupt for admin queue (vector 0) */
 	if (dev->num_vecs > 0) {
-		queue->irq_vector = dev->msix_entries[0].vector;
+		queue->irq_vector = pci_irq_vector(dev->pdev, 0);
 		ret = request_threaded_irq(queue->irq_vector,
 					   accel_irq_handler,
 					   accel_irq_handler_threaded,

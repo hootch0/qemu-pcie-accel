@@ -1081,7 +1081,7 @@ int accel_create_queue(struct accel_dev *dev, u16 qid, u16 sq_size, u16 cq_size)
 
 	/* Assign interrupt vector if available */
 	if (qid < dev->num_vecs) {
-		queue->irq_vector = dev->msix_entries[qid].vector;
+		queue->irq_vector = pci_irq_vector(dev->pdev, qid);
 		cmd.dw.admin.cdw11 = cpu_to_le32(qid | (1 << 16));  /* IEN=1 */
 	} else {
 		cmd.dw.admin.cdw11 = cpu_to_le32(0);  /* No interrupt */

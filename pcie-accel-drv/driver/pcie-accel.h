@@ -338,7 +338,6 @@ struct accel_dev {
 	u32 num_queues;
 
 	int num_vecs;
-	struct msix_entry *msix_entries;
 
 	struct list_head p2p_peers;
 	spinlock_t p2p_lock;
