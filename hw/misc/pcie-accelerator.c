@@ -310,10 +310,15 @@ void accel_post_cqes(void *opaque)
         trace_pcie_accel_post_cqe(cq->cqid, sq->sqid, req->cqe.cid,
                                    req->cqe.status);
 
-        qemu_log_mask(LOG_UNIMP,
-                      "pcie-accel: Posted CQE: cqid=%u sqid=%u cid=%u status=0x%x addr=0x%" PRIx64 "\n",
-                      cq->cqid, sq->sqid, le16_to_cpu(req->cqe.cid),
-                      le16_to_cpu(req->cqe.status), addr);
+        /* Trace: dump posted CQE */
+        qemu_log("pcie-accel: CQ[%u] POST @ 0x%" PRIx64 " tail=%u phase=%u\n"
+                 "  result=0x%08x sq_head=%u sq_id=%u cid=%u status=0x%04x\n",
+                 cq->cqid, addr, cq->tail, cq->phase,
+                 le32_to_cpu(req->cqe.result),
+                 le16_to_cpu(req->cqe.sq_head),
+                 le16_to_cpu(req->cqe.sq_id),
+                 le16_to_cpu(req->cqe.cid),
+                 le16_to_cpu(req->cqe.status));
 
         /* Remove from completion list */
         QTAILQ_REMOVE(&cq->req_list, req, entry);
@@ -526,6 +531,17 @@ uint16_t accel_io_cmd(PCIeAccel *n, AccelRequest *req)
 
     trace_pcie_accel_cmd_dispatch(req->sq->sqid, le16_to_cpu(cmd->cid),
                                    cmd->opcode);
+
+    static const char *io_names[] = {
+        [0]                    = "INVALID",
+        [ACCEL_CMD_LOOPBACK]   = "LOOPBACK",
+        [ACCEL_CMD_P2P_WRITE]  = "P2P_WRITE",
+        [ACCEL_CMD_P2P_READ]   = "P2P_READ",
+    };
+    const char *name = (cmd->opcode <= ACCEL_CMD_P2P_READ && io_names[cmd->opcode])
+                       ? io_names[cmd->opcode] : "UNKNOWN";
+    qemu_log("pcie-accel: IO CMD %s (0x%02x) sqid=%u cid=%u\n",
+             name, cmd->opcode, req->sq->sqid, le16_to_cpu(cmd->cid));
 
     switch (cmd->opcode) {
     case ACCEL_CMD_LOOPBACK:
@@ -789,6 +805,25 @@ uint16_t accel_admin_cmd(PCIeAccel *n, AccelRequest *req)
 
     trace_pcie_accel_cmd_dispatch(0, le16_to_cpu(cmd->cid), cmd->opcode);
 
+    static const char *adm_names[] = {
+        [ACCEL_ADM_CMD_IDENTIFY]          = "IDENTIFY",
+        [ACCEL_ADM_CMD_DELETE_SQ]         = "DELETE_SQ",
+        [ACCEL_ADM_CMD_CREATE_SQ]         = "CREATE_SQ",
+        [ACCEL_ADM_CMD_DELETE_CQ]         = "DELETE_CQ",
+        [ACCEL_ADM_CMD_CREATE_CQ]         = "CREATE_CQ",
+        [ACCEL_ADM_CMD_SET_FEATURES]      = "SET_FEATURES",
+        [ACCEL_ADM_CMD_GET_FEATURES]      = "GET_FEATURES",
+        [ACCEL_ADM_CMD_P2P_SETUP]         = "P2P_SETUP",
+        [ACCEL_ADM_CMD_P2P_TEARDOWN]      = "P2P_TEARDOWN",
+        [ACCEL_ADM_CMD_P2P_RING_SETUP]    = "P2P_RING_SETUP",
+        [ACCEL_ADM_CMD_P2P_RING_TEARDOWN] = "P2P_RING_TEARDOWN",
+    };
+    const char *name = (cmd->opcode <= ACCEL_ADM_CMD_P2P_RING_TEARDOWN &&
+                         adm_names[cmd->opcode]) ? adm_names[cmd->opcode]
+                                                  : "UNKNOWN";
+    qemu_log("pcie-accel: ADMIN CMD %s (0x%02x) cid=%u\n",
+             name, cmd->opcode, le16_to_cpu(cmd->cid));
+
     switch (cmd->opcode) {
     case ACCEL_ADM_CMD_DELETE_SQ:
         return accel_cmd_delete_sq(n, req);
@@ -862,6 +897,23 @@ void accel_process_sq(void *opaque)
             accel_set_ctrl_fatal(n);
             break;
         }
+
+        /* Trace: dump fetched SQE */
+        qemu_log("pcie-accel: SQ[%u] FETCH @ 0x%" PRIx64 " head=%u\n"
+                 "  opcode=0x%02x flags=0x%02x cid=%u nsid=%u\n"
+                 "  prp1=0x%016" PRIx64 " prp2=0x%016" PRIx64 "\n"
+                 "  cdw10=0x%08x cdw11=0x%08x cdw12=0x%08x\n"
+                 "  cdw13=0x%08x cdw14=0x%08x cdw15=0x%08x\n",
+                 sq->sqid, addr, sq->head,
+                 cmd.opcode, cmd.flags,
+                 le16_to_cpu(cmd.cid), le32_to_cpu(cmd.nsid),
+                 le64_to_cpu(cmd.prp1), le64_to_cpu(cmd.prp2),
+                 le32_to_cpu(cmd.dw.admin.cdw10),
+                 le32_to_cpu(cmd.dw.admin.cdw11),
+                 le32_to_cpu(cmd.dw.admin.cdw12),
+                 le32_to_cpu(cmd.dw.admin.cdw13),
+                 le32_to_cpu(cmd.dw.admin.cdw14),
+                 le32_to_cpu(cmd.dw.admin.cdw15));
 
         /* Increment SQ head */
         accel_inc_sq_head(sq);
@@ -966,6 +1018,9 @@ static void accel_process_doorbell(PCIeAccel *n, hwaddr addr, uint32_t val)
 
         trace_pcie_accel_doorbell_cq(qid, new_head);
 
+        qemu_log("pcie-accel: CQ[%u] DOORBELL head=%u -> %u (tail=%u size=%u)\n",
+                 qid, cq->head, new_head, cq->tail, cq->size);
+
         cq->head = new_head;
 
         /* Check if CQ became empty */
@@ -1011,9 +1066,8 @@ static void accel_process_doorbell(PCIeAccel *n, hwaddr addr, uint32_t val)
 
         trace_pcie_accel_doorbell_sq(qid, new_tail);
 
-        qemu_log_mask(LOG_UNIMP,
-                      "pcie-accel: SQ %u doorbell: new_tail=%u (head=%u size=%u)\n",
-                      qid, new_tail, sq->head, sq->size);
+        qemu_log("pcie-accel: SQ[%u] DOORBELL tail=%u -> %u (head=%u size=%u)\n",
+                 qid, sq->tail, new_tail, sq->head, sq->size);
 
         sq->tail = new_tail;
 

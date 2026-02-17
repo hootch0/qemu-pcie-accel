@@ -352,11 +352,11 @@
  */
 
 /* Admin Command Set */
-#define ACCEL_ADM_CMD_DELETE_SQ         0x00
-#define ACCEL_ADM_CMD_CREATE_SQ         0x01
+#define ACCEL_ADM_CMD_IDENTIFY          0x00
+#define ACCEL_ADM_CMD_DELETE_SQ         0x01
+#define ACCEL_ADM_CMD_CREATE_SQ         0x02
 #define ACCEL_ADM_CMD_DELETE_CQ         0x04
 #define ACCEL_ADM_CMD_CREATE_CQ         0x05
-#define ACCEL_ADM_CMD_IDENTIFY          0x06
 #define ACCEL_ADM_CMD_GET_FEATURES      0x0A
 #define ACCEL_ADM_CMD_SET_FEATURES      0x09
 #define ACCEL_ADM_CMD_P2P_SETUP         0x10
@@ -533,7 +533,7 @@
 
 /* ===== BAR Sizes ===== */
 #define ACCEL_BAR0_SIZE         (8 * 1024)         /* 8KB - MMIO registers + doorbells */
-#define ACCEL_CMB_SIZE          (16 * 1024 * 1024)   /* 16MB - Controller Memory Buffer (BAR2) */
+#define ACCEL_CMB_SIZE          (32 * 1024 * 1024)   /* 16MB - Controller Memory Buffer (BAR2) */
 #define ACCEL_BAR4_SIZE         (16 * 1024)         /* 16KB - MSI-X table/PBA */
 
 /* MSI-X table/PBA offsets within BAR4 */
