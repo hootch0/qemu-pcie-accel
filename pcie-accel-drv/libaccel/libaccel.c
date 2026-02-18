@@ -47,7 +47,7 @@ struct accel_uring_cmd {
     union {
         /* ACCEL_URING_CMD_SUBMIT */
         struct {
-            struct accel_cmd cmd;
+            union accel_cmd cmd;
         } submit;
 
         /* ACCEL_URING_CMD_CREATE_QUEUE */
@@ -67,8 +67,9 @@ struct accel_uring_cmd {
         /* ACCEL_URING_CMD_SETUP_P2P */
         struct {
             uint16_t peer_bdf;
-            uint16_t flags;
-            uint32_t rsvd;
+            uint8_t  slot;
+            uint8_t  peer_slot;
+            uint64_t peer_bar0;
         } setup_p2p;
     };
 } __attribute__((packed));
@@ -287,8 +288,7 @@ static int submit_and_wait_sync(struct accel_device *dev)
 /**
  * accel_create_queue - Create I/O queue pair
  */
-int accel_create_queue(struct accel_device *dev, uint16_t qid,
-                       uint16_t sq_size, uint16_t cq_size)
+int accel_create_queue(struct accel_device *dev, uint16_t qid)
 {
     struct accel_uring_cmd ucmd = {0};
     struct io_uring_sqe *sqe;
@@ -298,8 +298,6 @@ int accel_create_queue(struct accel_device *dev, uint16_t qid,
 
     ucmd.op = ACCEL_URING_CMD_CREATE_QUEUE;
     ucmd.qid = qid;
-    ucmd.create_queue.sq_size = sq_size;
-    ucmd.create_queue.cq_size = cq_size;
 
     sqe = prepare_uring_cmd(dev, &ucmd, 0);
     if (!sqe)
@@ -337,9 +335,10 @@ int accel_delete_queue(struct accel_device *dev, uint16_t qid)
  */
 
 /**
- * accel_setup_p2p_peer - Register P2P peer device
+ * accel_setup_p2p_peer - Register P2P peer and set up ring buffer
  */
-int accel_setup_p2p_peer(struct accel_device *dev, uint16_t peer_bdf)
+int accel_setup_p2p_peer(struct accel_device *dev, uint16_t peer_bdf,
+                         uint8_t slot, uint8_t peer_slot)
 {
     struct accel_uring_cmd ucmd = {0};
     struct io_uring_sqe *sqe;
@@ -349,6 +348,9 @@ int accel_setup_p2p_peer(struct accel_device *dev, uint16_t peer_bdf)
 
     ucmd.op = ACCEL_URING_CMD_SETUP_P2P;
     ucmd.setup_p2p.peer_bdf = peer_bdf;
+    ucmd.setup_p2p.slot = slot;
+    ucmd.setup_p2p.peer_slot = peer_slot;
+    /* peer_bar0 left as 0 — driver resolves from PCI config */
 
     sqe = prepare_uring_cmd(dev, &ucmd, 0);
     if (!sqe)
@@ -444,7 +446,7 @@ int accel_get_stats(struct accel_device *dev, struct accel_stats *stats)
  * accel_submit_cmd - Submit command synchronously
  */
 int accel_submit_cmd(struct accel_device *dev, uint16_t qid,
-                     struct accel_cmd *cmd, struct accel_cqe *cqe,
+                     union accel_cmd *cmd, struct accel_cqe *cqe,
                      uint32_t timeout_ms)
 {
     struct accel_uring_cmd ucmd = {0};
@@ -481,7 +483,7 @@ int accel_submit_cmd(struct accel_device *dev, uint16_t qid,
 int accel_loopback(struct accel_device *dev, uint16_t qid,
                    void *data, uint32_t length, uint32_t pattern)
 {
-    struct accel_cmd cmd = {0};
+    union accel_cmd cmd = {0};
 
     if (!dev || !data || length == 0)
         return ACCEL_ERR_INVAL;
@@ -501,7 +503,7 @@ int accel_p2p_write(struct accel_device *dev, uint16_t qid,
                     uint16_t peer_bdf, const void *local_data,
                     uint64_t peer_addr, uint32_t length)
 {
-    struct accel_cmd cmd = {0};
+    union accel_cmd cmd = {0};
 
     if (!dev || !local_data || length == 0)
         return ACCEL_ERR_INVAL;
@@ -522,7 +524,7 @@ int accel_p2p_read(struct accel_device *dev, uint16_t qid,
                    uint16_t peer_bdf, void *local_data,
                    uint64_t peer_addr, uint32_t length)
 {
-    struct accel_cmd cmd = {0};
+    union accel_cmd cmd = {0};
 
     if (!dev || !local_data || length == 0)
         return ACCEL_ERR_INVAL;
@@ -544,7 +546,7 @@ int accel_p2p_read(struct accel_device *dev, uint16_t qid,
  * accel_async_submit_cmd - Submit command asynchronously
  */
 int accel_async_submit_cmd(struct accel_device *dev, uint16_t qid,
-                           struct accel_cmd *cmd,
+                           union accel_cmd *cmd,
                            struct accel_async_token *token)
 {
     struct accel_uring_cmd ucmd = {0};
@@ -588,7 +590,7 @@ int accel_async_loopback(struct accel_device *dev, uint16_t qid,
                          void *data, uint32_t length, uint32_t pattern,
                          struct accel_async_token *token)
 {
-    struct accel_cmd cmd = {0};
+    union accel_cmd cmd = {0};
 
     if (!dev || !data || length == 0 || !token)
         return ACCEL_ERR_INVAL;
@@ -612,7 +614,7 @@ int accel_async_p2p_write(struct accel_device *dev, uint16_t qid,
                           uint64_t peer_addr, uint32_t length,
                           struct accel_async_token *token)
 {
-    struct accel_cmd cmd = {0};
+    union accel_cmd cmd = {0};
 
     if (!dev || !local_data || length == 0 || !token)
         return ACCEL_ERR_INVAL;
@@ -637,7 +639,7 @@ int accel_async_p2p_read(struct accel_device *dev, uint16_t qid,
                          uint64_t peer_addr, uint32_t length,
                          struct accel_async_token *token)
 {
-    struct accel_cmd cmd = {0};
+    union accel_cmd cmd = {0};
 
     if (!dev || !local_data || length == 0 || !token)
         return ACCEL_ERR_INVAL;
@@ -845,48 +847,21 @@ void accel_cancel_batch(struct accel_device *dev)
         dev->batch_mode = false;
 }
 
-/*
- * ===== P2P Ring Buffer Setup =====
- */
-
 /**
- * accel_p2p_ring_setup - Issue admin command to set up P2P ring buffer
- *
- * The host orchestrates P2P ring setup between devices. After setup,
- * the devices exchange messages directly via ring buffers without host
- * involvement.
+ * accel_teardown_p2p_peer - Tear down ring buffer and unregister peer
  */
-int accel_p2p_ring_setup(struct accel_device *dev, uint16_t peer_bdf,
-                         uint8_t slot, uint8_t peer_slot)
+int accel_teardown_p2p_peer(struct accel_device *dev, uint16_t peer_bdf,
+                            uint8_t slot)
 {
-    struct accel_cmd cmd = {0};
+    union accel_cmd cmd = {0};
     struct accel_cqe cqe;
 
     if (!dev)
         return ACCEL_ERR_INVAL;
 
-    cmd.opcode = ACCEL_ADM_CMD_P2P_RING_SETUP;
-    cmd.dw.admin.cdw10 = (peer_bdf & 0xFFFF) |
-                         ((slot & 0xF) << 16) |
-                         ((peer_slot & 0xF) << 20);
-    /* BAR0 address left as 0 - driver resolves from PCI config */
-
-    return accel_submit_cmd(dev, 0, &cmd, &cqe, 5000);
-}
-
-/**
- * accel_p2p_ring_teardown - Issue admin command to tear down a P2P ring buffer
- */
-int accel_p2p_ring_teardown(struct accel_device *dev, uint8_t slot)
-{
-    struct accel_cmd cmd = {0};
-    struct accel_cqe cqe;
-
-    if (!dev)
-        return ACCEL_ERR_INVAL;
-
-    cmd.opcode = ACCEL_ADM_CMD_P2P_RING_TEARDOWN;
-    cmd.dw.admin.cdw10 = slot & 0xF;
+    cmd.p2p_teardown.opcode = ACCEL_ADM_CMD_P2P_TEARDOWN;
+    cmd.p2p_teardown.peer_bdf = peer_bdf;
+    cmd.p2p_teardown.slot = slot;
 
     return accel_submit_cmd(dev, 0, &cmd, &cqe, 5000);
 }

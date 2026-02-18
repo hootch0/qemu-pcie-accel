@@ -425,81 +425,182 @@ uint16_t accel_cmd_p2p_read(PCIeAccel *n, AccelRequest *req)
 }
 
 /*
- * ===== P2P Setup Command =====
+ * ===== P2P Setup / Teardown Commands =====
  */
 
 /**
- * accel_cmd_p2p_setup - P2P setup admin command
+ * accel_cmd_p2p_setup - P2P setup admin command (opcode 0x0F)
  * @n: Device state
  * @req: Request structure
  *
- * Admin command to register or unregister P2P peer devices.
+ * Registers a P2P peer device AND sets up a ring buffer slot in one command.
  *
- * Command parameters:
- * - cdw10[15:0]:  Peer BDF (Bus:Device:Function)
- * - cdw10[16]:    Operation (0=register, 1=unregister)
- * - prp1:         Peer device information (future use)
+ * Command fields (from cmd->p2p_setup):
+ * - peer_bdf:   Peer Bus:Device:Function
+ * - slot:       Ring slot in our device (0-6)
+ * - peer_slot:  Our slot in peer's device (0-6)
+ * - peer_bar0:  Peer's BAR0 physical address
  *
  * Returns: Status code
  */
 uint16_t accel_cmd_p2p_setup(PCIeAccel *n, AccelRequest *req)
 {
     AccelCmd *cmd = &req->cmd;
-    uint16_t peer_bdf = le32_to_cpu(cmd->dw.admin.cdw10) & 0xFFFF;
-    bool unregister = (le32_to_cpu(cmd->dw.admin.cdw10) >> 16) & 0x1;
+    uint16_t peer_bdf = le16_to_cpu(cmd->p2p_setup.peer_bdf);
+    uint8_t slot = cmd->p2p_setup.slot;
+    uint8_t peer_slot = cmd->p2p_setup.peer_slot;
+    hwaddr peer_bar0 = le64_to_cpu(cmd->p2p_setup.peer_bar0);
+    AccelP2PRing *ring;
+    PCIDevice *pdev;
+    PCIBus *bus;
 
-    if (unregister) {
-        /* Unregister peer */
-        AccelP2PPeer *peer = accel_find_p2p_peer(n, peer_bdf);
-        if (!peer) {
-            return ACCEL_SC_P2P_PEER_NOT_FOUND;
-        }
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: P2P_SETUP: peer=0x%x slot=%u peer_slot=%u "
+                  "bar0=0x%" PRIx64 "\n",
+                  peer_bdf, slot, peer_slot, peer_bar0);
 
-        accel_unregister_p2p_peer(n, peer_bdf);
-        return ACCEL_SC_SUCCESS;
-
-    } else {
-        /* Register peer */
-        PCIDevice *pdev;
-        PCIBus *bus;
-        int devfn;
-
-        /*
-         * In a real implementation, the host would provide information
-         * about the peer device. For this implementation, we attempt to
-         * find the peer device on the PCI bus by BDF.
-         *
-         * BDF format: [15:8] = bus, [7:3] = device, [2:0] = function
-         */
-        uint8_t bus_num = (peer_bdf >> 8) & 0xFF;
-        uint8_t dev_num = (peer_bdf >> 3) & 0x1F;
-        uint8_t func_num = peer_bdf & 0x7;
-        devfn = PCI_DEVFN(dev_num, func_num);
-
-        /* Get the PCI bus */
-        bus = pci_get_bus(PCI_DEVICE(n));
-        if (!bus) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "pcie-accel: Failed to get PCI bus\n");
-            return ACCEL_SC_P2P_PEER_INVALID;
-        }
-
-        /* Find the peer device on the bus */
-        pdev = pci_find_device(bus, bus_num, devfn);
-        if (!pdev) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "pcie-accel: P2P peer device 0x%x not found on bus\n",
-                          peer_bdf);
-            return ACCEL_SC_P2P_PEER_NOT_FOUND;
-        }
-
-        /* Register the peer */
-        if (accel_register_p2p_peer(n, peer_bdf, pdev) < 0) {
-            return ACCEL_SC_P2P_MAX_PEERS;
-        }
-
-        return ACCEL_SC_SUCCESS;
+    /* Validate slot numbers */
+    if (slot >= ACCEL_P2R_MAX_SLOTS) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pcie-accel: P2P_SETUP invalid slot %u (max=%u)\n",
+                      slot, ACCEL_P2R_MAX_SLOTS - 1);
+        return ACCEL_SC_P2R_INVALID_SLOT;
     }
+
+    if (peer_slot >= ACCEL_P2R_MAX_SLOTS) {
+        return ACCEL_SC_P2R_INVALID_SLOT;
+    }
+
+    ring = &n->p2p.p2p_rings[slot];
+
+    /* Check if slot is already active */
+    if (ring->active) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pcie-accel: P2P_SETUP slot %u already active\n", slot);
+        return ACCEL_SC_P2R_SLOT_ACTIVE;
+    }
+
+    /* Find the peer device on the PCI bus */
+    uint8_t bus_num = (peer_bdf >> 8) & 0xFF;
+    uint8_t dev_num = (peer_bdf >> 3) & 0x1F;
+    uint8_t func_num = peer_bdf & 0x7;
+
+    bus = pci_get_bus(PCI_DEVICE(n));
+    if (!bus) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pcie-accel: Failed to get PCI bus\n");
+        return ACCEL_SC_P2P_PEER_INVALID;
+    }
+
+    pdev = pci_find_device(bus, bus_num, PCI_DEVFN(dev_num, func_num));
+    if (!pdev) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pcie-accel: P2P_SETUP peer 0x%x not found\n", peer_bdf);
+        return ACCEL_SC_P2P_PEER_NOT_FOUND;
+    }
+
+    /* Verify peer is a pcie-accelerator device */
+    if (!object_dynamic_cast(OBJECT(pdev), TYPE_PCIE_ACCEL)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pcie-accel: P2P_SETUP peer 0x%x is not a "
+                      "pcie-accelerator\n", peer_bdf);
+        return ACCEL_SC_P2R_PEER_MISMATCH;
+    }
+
+    /* Register the peer device (idempotent if already registered) */
+    if (accel_register_p2p_peer(n, peer_bdf, pdev) < 0) {
+        return ACCEL_SC_P2P_MAX_PEERS;
+    }
+
+    /* Initialize ring buffer */
+    memset(ring, 0, sizeof(*ring));
+    ring->ctrl = n;
+    ring->slot = slot;
+    ring->peer_bdf = peer_bdf;
+    ring->active = true;
+
+    /* Initialize inbound ring state */
+    ring->head = 0;
+    ring->tail = 0;
+    ring->size = ACCEL_RING_DATA_SIZE;
+
+    /* Initialize outbound tracking */
+    ring->outbound.our_slot = peer_slot;
+    ring->outbound.peer_bar0 = peer_bar0;
+    ring->outbound.peer_as = pci_get_address_space(pdev);
+    ring->outbound.peer_dev = pdev;
+
+    /* Clear ring region in CMB: header + data area */
+    void *cmb_ram = memory_region_get_ram_ptr(&n->cmb);
+    uint8_t *ring_base = (uint8_t *)cmb_ram + ACCEL_RING_OFFSET(slot);
+    memset(ring_base, 0, ACCEL_RING_SIZE);
+
+    /* Initialize ring header */
+    AccelRingHdr *hdr = (AccelRingHdr *)ring_base;
+    hdr->head = 0;
+    hdr->tail = 0;
+    hdr->size = cpu_to_le32(ACCEL_RING_DATA_SIZE);
+
+    /* Create BH for inbound ring processing */
+    ring->bh = qemu_bh_new(accel_process_p2p_ring, ring);
+
+    n->p2p.num_p2p_rings++;
+
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: P2P_SETUP SUCCESS: slot=%u peer=0x%x "
+                  "peer_slot=%u total=%u\n",
+                  slot, peer_bdf, peer_slot, n->p2p.num_p2p_rings);
+
+    return ACCEL_SC_SUCCESS;
+}
+
+/**
+ * accel_cmd_p2p_teardown - P2P teardown admin command (opcode 0x10)
+ * @n: Device state
+ * @req: Request structure
+ *
+ * Tears down a ring buffer slot AND unregisters the peer device in one command.
+ *
+ * Command fields (from cmd->p2p_teardown):
+ * - peer_bdf:  Peer BDF to unregister
+ * - slot:      Ring slot to tear down (0-6)
+ *
+ * Returns: Status code
+ */
+uint16_t accel_cmd_p2p_teardown(PCIeAccel *n, AccelRequest *req)
+{
+    AccelCmd *cmd = &req->cmd;
+    uint16_t peer_bdf = le16_to_cpu(cmd->p2p_teardown.peer_bdf);
+    uint8_t slot = cmd->p2p_teardown.slot;
+    AccelP2PRing *ring;
+
+    if (slot >= ACCEL_P2R_MAX_SLOTS) {
+        return ACCEL_SC_P2R_INVALID_SLOT;
+    }
+
+    ring = &n->p2p.p2p_rings[slot];
+    if (!ring->active) {
+        return ACCEL_SC_P2R_INVALID_SLOT;
+    }
+
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: P2P_TEARDOWN: slot=%u peer=0x%x\n",
+                  slot, ring->peer_bdf);
+
+    /* Cancel and free BH */
+    if (ring->bh) {
+        qemu_bh_cancel(ring->bh);
+        qemu_bh_delete(ring->bh);
+        ring->bh = NULL;
+    }
+
+    ring->active = false;
+    n->p2p.num_p2p_rings--;
+
+    /* Unregister the peer device */
+    accel_unregister_p2p_peer(n, peer_bdf);
+
+    return ACCEL_SC_SUCCESS;
 }
 
 /*
@@ -711,169 +812,6 @@ void accel_process_p2p_ring(void *opaque)
 
     /* Update head in ring header so peer can see consumer progress */
     hdr->head = cpu_to_le32(ring->head);
-}
-
-/**
- * accel_cmd_p2p_ring_setup - Admin command: Set up a P2P ring buffer
- * @n: Device state
- * @req: Request structure
- *
- * Sets up a P2P ring buffer slot with a peer device. The host provides
- * peer BAR0 address and slot assignments via admin command parameters.
- *
- * CDW10[15:0]:  Peer BDF
- * CDW10[19:16]: Slot number for this peer (0-6)
- * CDW10[23:20]: Our slot in peer's device (0-6)
- * CDW11:        Peer BAR0 address (low 32)
- * CDW12:        Peer BAR0 address (high 32)
- *
- * Returns: Status code
- */
-uint16_t accel_cmd_p2p_ring_setup(PCIeAccel *n, AccelRequest *req)
-{
-    AccelCmd *cmd = &req->cmd;
-    uint32_t cdw10 = le32_to_cpu(cmd->dw.admin.cdw10);
-    uint16_t peer_bdf = cdw10 & 0xFFFF;
-    uint8_t slot = (cdw10 >> 16) & 0xF;
-    uint8_t our_slot = (cdw10 >> 20) & 0xF;
-    hwaddr peer_bar0 = ((hwaddr)le32_to_cpu(cmd->dw.admin.cdw12) << 32) |
-                       le32_to_cpu(cmd->dw.admin.cdw11);
-    AccelP2PRing *ring;
-    PCIDevice *pdev;
-    PCIBus *bus;
-
-    qemu_log_mask(LOG_UNIMP,
-                  "pcie-accel: P2R_SETUP: peer=0x%x slot=%u our_slot=%u "
-                  "bar0=0x%" PRIx64 "\n",
-                  peer_bdf, slot, our_slot, peer_bar0);
-
-    /* Validate slot number */
-    if (slot >= ACCEL_P2R_MAX_SLOTS) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "pcie-accel: P2R_SETUP invalid slot %u (max=%u)\n",
-                      slot, ACCEL_P2R_MAX_SLOTS - 1);
-        return ACCEL_SC_P2R_INVALID_SLOT;
-    }
-
-    if (our_slot >= ACCEL_P2R_MAX_SLOTS) {
-        return ACCEL_SC_P2R_INVALID_SLOT;
-    }
-
-    ring = &n->p2p.p2p_rings[slot];
-
-    /* Check if slot is already active */
-    if (ring->active) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "pcie-accel: P2R_SETUP slot %u already active\n", slot);
-        return ACCEL_SC_P2R_SLOT_ACTIVE;
-    }
-
-    /* Find the peer device on the PCI bus */
-    bus = pci_get_bus(PCI_DEVICE(n));
-    if (!bus) {
-        return ACCEL_SC_P2P_PEER_INVALID;
-    }
-
-    uint8_t bus_num = (peer_bdf >> 8) & 0xFF;
-    uint8_t dev_num = (peer_bdf >> 3) & 0x1F;
-    uint8_t func_num = peer_bdf & 0x7;
-    pdev = pci_find_device(bus, bus_num, PCI_DEVFN(dev_num, func_num));
-
-    if (!pdev) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "pcie-accel: P2R_SETUP peer 0x%x not found\n", peer_bdf);
-        return ACCEL_SC_P2P_PEER_NOT_FOUND;
-    }
-
-    /* Verify peer is a pcie-accelerator device */
-    if (!object_dynamic_cast(OBJECT(pdev), TYPE_PCIE_ACCEL)) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "pcie-accel: P2R_SETUP peer 0x%x is not a "
-                      "pcie-accelerator\n", peer_bdf);
-        return ACCEL_SC_P2R_PEER_MISMATCH;
-    }
-
-    /* Initialize ring buffer */
-    memset(ring, 0, sizeof(*ring));
-    ring->ctrl = n;
-    ring->slot = slot;
-    ring->peer_bdf = peer_bdf;
-    ring->active = true;
-
-    /* Initialize inbound ring state */
-    ring->head = 0;
-    ring->tail = 0;
-    ring->size = ACCEL_RING_DATA_SIZE;
-
-    /* Initialize outbound tracking */
-    ring->outbound.our_slot = our_slot;
-    ring->outbound.peer_bar0 = peer_bar0;
-    ring->outbound.peer_as = pci_get_address_space(pdev);
-    ring->outbound.peer_dev = pdev;
-
-    /* Clear ring region in CMB: header + data area */
-    void *cmb_ram = memory_region_get_ram_ptr(&n->cmb);
-    uint8_t *ring_base = (uint8_t *)cmb_ram + ACCEL_RING_OFFSET(slot);
-    memset(ring_base, 0, ACCEL_RING_SIZE);
-
-    /* Initialize ring header */
-    AccelRingHdr *hdr = (AccelRingHdr *)ring_base;
-    hdr->head = 0;
-    hdr->tail = 0;
-    hdr->size = cpu_to_le32(ACCEL_RING_DATA_SIZE);
-
-    /* Create BH for inbound ring processing */
-    ring->bh = qemu_bh_new(accel_process_p2p_ring, ring);
-
-    n->p2p.num_p2p_rings++;
-
-    qemu_log_mask(LOG_UNIMP,
-                  "pcie-accel: P2R_SETUP SUCCESS: slot=%u peer=0x%x "
-                  "our_slot=%u total=%u\n",
-                  slot, peer_bdf, our_slot, n->p2p.num_p2p_rings);
-
-    return ACCEL_SC_SUCCESS;
-}
-
-/**
- * accel_cmd_p2p_ring_teardown - Admin command: Tear down a P2P ring buffer
- * @n: Device state
- * @req: Request structure
- *
- * CDW10[3:0]: Slot number to tear down
- *
- * Returns: Status code
- */
-uint16_t accel_cmd_p2p_ring_teardown(PCIeAccel *n, AccelRequest *req)
-{
-    AccelCmd *cmd = &req->cmd;
-    uint8_t slot = le32_to_cpu(cmd->dw.admin.cdw10) & 0xF;
-    AccelP2PRing *ring;
-
-    if (slot >= ACCEL_P2R_MAX_SLOTS) {
-        return ACCEL_SC_P2R_INVALID_SLOT;
-    }
-
-    ring = &n->p2p.p2p_rings[slot];
-    if (!ring->active) {
-        return ACCEL_SC_P2R_INVALID_SLOT;
-    }
-
-    qemu_log_mask(LOG_UNIMP,
-                  "pcie-accel: P2R_TEARDOWN: slot=%u peer=0x%x\n",
-                  slot, ring->peer_bdf);
-
-    /* Cancel and free BH */
-    if (ring->bh) {
-        qemu_bh_cancel(ring->bh);
-        qemu_bh_delete(ring->bh);
-        ring->bh = NULL;
-    }
-
-    ring->active = false;
-    n->p2p.num_p2p_rings--;
-
-    return ACCEL_SC_SUCCESS;
 }
 
 /**

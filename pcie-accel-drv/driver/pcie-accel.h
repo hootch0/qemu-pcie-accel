@@ -61,20 +61,18 @@
 
 /* Command opcodes */
 #define ACCEL_ADM_CMD_IDENTIFY		0x00
-#define ACCEL_ADM_CMD_DELETE_SQ		0x01
-#define ACCEL_ADM_CMD_CREATE_SQ		0x02
-#define ACCEL_ADM_CMD_DELETE_CQ		0x04
-#define ACCEL_ADM_CMD_CREATE_CQ		0x05
 #define ACCEL_ADM_CMD_SET_FEATURES	0x09
 #define ACCEL_ADM_CMD_GET_FEATURES	0x0A
-#define ACCEL_ADM_CMD_P2P_SETUP		0x10
-#define ACCEL_ADM_CMD_P2P_TEARDOWN	0x11
-#define ACCEL_ADM_CMD_P2P_RING_SETUP	0x12
-#define ACCEL_ADM_CMD_P2P_RING_TEARDOWN	0x13
+#define ACCEL_ADM_CMD_CREATE_IOQ	0x0D
+#define ACCEL_ADM_CMD_DELETE_IOQ	0x0E
+#define ACCEL_ADM_CMD_P2P_SETUP		0x0F
+#define ACCEL_ADM_CMD_P2P_TEARDOWN	0x10
 
 #define ACCEL_CMD_LOOPBACK		0x01
 #define ACCEL_CMD_P2P_WRITE		0x02
 #define ACCEL_CMD_P2P_READ		0x03
+#define ACCEL_CMD_MEM_READ		0x05
+#define ACCEL_CMD_MEM_WRITE		0x06
 
 /* P2P Ring Buffer constants */
 #define ACCEL_P2R_MAX_SLOTS		7
@@ -113,7 +111,6 @@ enum accel_uring_cmd_op {
 	ACCEL_URING_CMD_SETUP_P2P,	/* Setup P2P peer */
 	ACCEL_URING_CMD_GET_STATS,	/* Get statistics */
 	ACCEL_URING_CMD_ADMIN,		/* Admin command */
-	ACCEL_URING_CMD_P2P_RING_SETUP,	/* Setup P2P ring buffer */
 };
 
 /* Forward declarations */
@@ -122,44 +119,116 @@ struct accel_queue;
 struct accel_request;
 
 /**
- * struct accel_cmd - Submission queue entry (64 bytes)
+ * union accel_cmd - Submission queue entry (64 bytes)
  */
-struct accel_cmd {
-	__u8	opcode;
-	__u8	flags;		/* [1:0]=DBD type, [2]=PASID, [3]=PRIV */
-	__le16	cid;
-	__le32	rsvd0;		/* Reserved (was nsid) */
-	__le32	rsvd1;		/* Reserved */
-	union {
-		struct { __le64 prp1; __le64 prp2; } prpl;
-		struct { __le64 addr; __le32 length; __le32 type; } sgl;
-		struct { __le64 addr; __le64 rsvd; } hva;
-	} dbd;
-	__le32	data_xfer_size;
-	__le64	rsvd2;
-	union {
-		struct {
-			__le32	length;
-			__le32	rsvd;
-			__le64	peer_addr;
-			__le32	peer_bdf;
-			__le32	pasid;
-		} p2p;
-		struct {
-			__le32	length;
-			__le32	pattern;
-			__le32	flags;
-			__le32	rsvd[3];
-		} loopback;
-		struct {
-			__le32	cdw10;
-			__le32	cdw11;
-			__le32	cdw12;
-			__le32	cdw13;
-			__le32	cdw14;
-			__le32	cdw15;
-		} admin;
-	} dw;
+union accel_cmd {
+	/* Generic command format */
+	struct {
+		__u8	opcode;
+		__u8	flags;		/* [1:0]=DBD type, [2]=PASID, [3]=PRIV */
+		__le16	cid;
+		__le32	rsvd0;		/* Reserved (was nsid) */
+		__le32	rsvd1;		/* Reserved */
+		union {
+			struct { __le64 prp1; __le64 prp2; } prpl;
+			struct { __le64 addr; __le32 length; __le32 type; } sgl;
+			struct { __le64 addr; __le64 rsvd; } hva;
+		} dbd;
+		__le32	data_xfer_size;
+		__le64	rsvd2;
+		union {
+			struct {
+				__le32	length;
+				__le32	rsvd;
+				__le64	peer_addr;
+				__le32	peer_bdf;
+				__le32	pasid;
+			} p2p;
+			struct {
+				__le32	length;
+				__le32	pattern;
+				__le32	flags;
+				__le32	rsvd[3];
+			} loopback;
+			struct {
+				__le32	cdw10;
+				__le32	cdw11;
+				__le32	cdw12;
+				__le32	cdw13;
+				__le32	cdw14;
+				__le32	cdw15;
+			} admin;
+		} dw;
+	} __packed;
+
+	/* Create IO Queue command (opcode 0x0D) */
+	struct {
+		__u8	opcode;
+		__u8	flags;
+		__le16	cid;
+		__le16	qid;
+		__le16	irq_vector;
+		__le64	sq_base;
+		__le64	cq_base;
+		__le32	reserved[10];
+	} __packed create_ioq;
+
+	/* Delete IO Queue command (opcode 0x0E) */
+	struct {
+		__u8	opcode;
+		__u8	flags;
+		__le16	cid;
+		__le16	qid;
+		__le16	reserved;
+		__le32	reserved2[14];
+	} __packed delete_ioq;
+
+	/* P2P Setup command (opcode 0x0F) */
+	struct {
+		__u8	opcode;
+		__u8	flags;
+		__le16	cid;
+		__le16	peer_bdf;
+		__u8	slot;
+		__u8	peer_slot;
+		__le64	peer_bar0;
+		__le32	reserved[12];
+	} __packed p2p_setup;
+
+	/* P2P Teardown command (opcode 0x10) */
+	struct {
+		__u8	opcode;
+		__u8	flags;
+		__le16	cid;
+		__le16	peer_bdf;
+		__u8	slot;
+		__u8	reserved;
+		__le32	reserved2[14];
+	} __packed p2p_teardown;
+
+	/* Memory Read command (opcode 0x05) */
+	struct {
+		__u8	opcode;
+		__u8	flags;
+		__le16	cid;
+		__le64	dev_addr;
+		__le64	host_addr;
+		__le64	reserved0;
+		__le32	length;
+		__le32	reserved[8];
+	} __packed mem_read;
+
+	/* Memory Write command (opcode 0x06) */
+	struct {
+		__u8	opcode;
+		__u8	flags;
+		__le16	cid;
+		__le64	dev_addr;
+		__le64	host_addr;
+		__le64	reserved0;
+		__le32	length;
+		__le32	reserved[8];
+	} __packed mem_write;
 } __packed;
 
 /**
@@ -187,7 +256,7 @@ struct accel_uring_cmd {
 	union {
 		/* For ACCEL_URING_CMD_SUBMIT */
 		struct {
-			struct accel_cmd cmd;	/* Device command */
+			union accel_cmd cmd;	/* Device command */
 		} submit;
 
 		/* For ACCEL_URING_CMD_CREATE_QUEUE */
@@ -207,8 +276,9 @@ struct accel_uring_cmd {
 		/* For ACCEL_URING_CMD_SETUP_P2P */
 		struct {
 			__u16	peer_bdf;
-			__u16	flags;
-			__u32	rsvd;
+			__u8	slot;
+			__u8	peer_slot;
+			__u64	peer_bar0;
 		} setup_p2p;
 	};
 } __packed;
@@ -240,7 +310,7 @@ struct accel_request {
 	u16 cid;				/* Command ID */
 	u16 status;				/* Completion status */
 
-	struct accel_cmd cmd;			/* Copy of command */
+	union accel_cmd cmd;			/* Copy of command */
 	struct accel_cqe cqe;			/* Completion entry */
 
 	/* DMA resources */
@@ -366,7 +436,7 @@ struct accel_dev {
 #define ACCEL_IOC_SUBMIT_CMD	_IOWR(ACCEL_IOC_MAGIC, 3, struct accel_uring_cmd)
 #define ACCEL_IOC_SETUP_P2P	_IOW(ACCEL_IOC_MAGIC, 4, struct accel_uring_cmd)
 #define ACCEL_IOC_GET_STATS	_IOR(ACCEL_IOC_MAGIC, 5, struct accel_uring_result)
-#define ACCEL_IOC_P2P_RING_SETUP _IOW(ACCEL_IOC_MAGIC, 6, struct accel_p2p_ring_setup)
+#define ACCEL_IOC_P2P_RING_SETUP _IOW(ACCEL_IOC_MAGIC, 6, struct accel_p2p_ring_setup)  /* deprecated */
 
 /* Helper functions */
 static inline u32 accel_reg_read32(struct accel_dev *dev, u32 offset)
@@ -404,14 +474,14 @@ unsigned int accel_get_req_pool_size(void);
 /* Queue management (pcie-accel-queue.c) */
 int accel_queue_init(void);
 void accel_queue_exit(void);
-int accel_create_queue(struct accel_dev *dev, u16 qid, u16 sq_size, u16 cq_size);
+int accel_create_queue(struct accel_dev *dev, u16 qid);
 int accel_delete_queue(struct accel_dev *dev, u16 qid);
 int accel_submit_sync_cmd(struct accel_dev *dev, u16 qid,
-			  struct accel_cmd *cmd, struct accel_cqe *cqe,
+			  union accel_cmd *cmd, struct accel_cqe *cqe,
 			  u32 timeout_ms);
-int accel_submit_admin_cmd(struct accel_dev *dev, struct accel_cmd *cmd,
+int accel_submit_admin_cmd(struct accel_dev *dev, union accel_cmd *cmd,
 			   struct accel_cqe *cqe);
-int accel_submit_async_cmd(struct accel_queue *queue, struct accel_cmd *cmd,
+int accel_submit_async_cmd(struct accel_queue *queue, union accel_cmd *cmd,
 			   struct io_uring_cmd *ioucmd, void *data_buf,
 			   dma_addr_t data_dma, size_t data_len,
 			   void __user *user_buf);
@@ -431,15 +501,15 @@ void accel_cleanup_chardev(struct accel_dev *dev);
 int accel_uring_cmd(struct io_uring_cmd *ioucmd, unsigned int issue_flags);
 
 /* P2P support (pcie-accel-p2p.c) */
-int accel_setup_p2p_peer(struct accel_dev *dev, u16 peer_bdf);
+int accel_setup_p2p_peer(struct accel_dev *dev,
+			 struct accel_p2p_ring_setup *params);
+int accel_remove_p2p_peer(struct accel_dev *dev, u16 peer_bdf, u8 slot);
 void accel_cleanup_p2p_peers(struct accel_dev *dev);
 int accel_enable_pasid(struct accel_dev *dev);
 void accel_disable_pasid(struct accel_dev *dev);
 int accel_p2p_dma_map(struct accel_dev *dev, struct accel_p2p_peer *peer,
 		      void *addr, size_t len, dma_addr_t *dma_addr);
 void accel_p2p_dma_unmap(struct accel_dev *dev, dma_addr_t dma_addr, size_t len);
-int accel_p2p_ring_setup(struct accel_dev *dev,
-			 struct accel_p2p_ring_setup *params);
 
 /* Request management */
 struct accel_request *accel_alloc_request(struct accel_queue *queue);

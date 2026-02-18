@@ -558,7 +558,7 @@ int main(int argc, char *argv[])
     printf("\n");
 
     /* Create I/O queue */
-    ret = accel_create_queue(dev, qid, 256, 256);
+    ret = accel_create_queue(dev, qid);
     if (ret != ACCEL_SUCCESS) {
         fprintf(stderr, "Failed to create queue %u: %s\n",
                 qid, accel_strerror(ret));

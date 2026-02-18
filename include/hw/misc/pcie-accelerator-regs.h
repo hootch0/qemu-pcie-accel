@@ -353,21 +353,19 @@
 
 /* Admin Command Set */
 #define ACCEL_ADM_CMD_IDENTIFY          0x00
-#define ACCEL_ADM_CMD_DELETE_SQ         0x01
-#define ACCEL_ADM_CMD_CREATE_SQ         0x02
-#define ACCEL_ADM_CMD_DELETE_CQ         0x04
-#define ACCEL_ADM_CMD_CREATE_CQ         0x05
-#define ACCEL_ADM_CMD_GET_FEATURES      0x0A
 #define ACCEL_ADM_CMD_SET_FEATURES      0x09
-#define ACCEL_ADM_CMD_P2P_SETUP         0x10
-#define ACCEL_ADM_CMD_P2P_TEARDOWN      0x11
-#define ACCEL_ADM_CMD_P2P_RING_SETUP    0x12
-#define ACCEL_ADM_CMD_P2P_RING_TEARDOWN 0x13
+#define ACCEL_ADM_CMD_GET_FEATURES      0x0A
+#define ACCEL_ADM_CMD_CREATE_IOQ        0x0D
+#define ACCEL_ADM_CMD_DELETE_IOQ        0x0E
+#define ACCEL_ADM_CMD_P2P_SETUP         0x0F
+#define ACCEL_ADM_CMD_P2P_TEARDOWN      0x10
 
 /* I/O Command Set */
 #define ACCEL_CMD_LOOPBACK              0x01
 #define ACCEL_CMD_P2P_WRITE             0x02
 #define ACCEL_CMD_P2P_READ              0x03
+#define ACCEL_CMD_MEM_READ              0x05
+#define ACCEL_CMD_MEM_WRITE             0x06
 
 /* ===== Command Flags ===== */
 /*

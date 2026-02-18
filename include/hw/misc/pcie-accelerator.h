@@ -39,58 +39,130 @@ OBJECT_DECLARE_SIMPLE_TYPE(PCIeAccel, PCIE_ACCEL)
  * Generic command structure using Command Dword (CDW) layout.
  * Commands are 64 bytes to match cache line size for efficient DMA.
  */
-typedef struct QEMU_PACKED AccelCmd {
-    /* CDW0 */
-    uint8_t  opcode;          /* Command opcode (see ACCEL_CMD_* in regs.h) */
-    uint8_t  flags;           /* [1:0]=DBD type, [2]=PASID, [3]=PRIV */
-    uint16_t cid;             /* Command identifier (unique within SQ) */
+typedef union QEMU_PACKED AccelCmd {
+    /* Generic command format */
+    struct QEMU_PACKED {
+        /* CDW0 */
+        uint8_t  opcode;          /* Command opcode (see ACCEL_CMD_* in regs.h) */
+        uint8_t  flags;           /* [1:0]=DBD type, [2]=PASID, [3]=PRIV */
+        uint16_t cid;             /* Command identifier (unique within SQ) */
 
-    /* CDW1-2: Reserved */
-    uint32_t rsvd0;           /* Reserved (was nsid) */
-    uint32_t rsvd1;           /* Reserved */
+        /* CDW1-2: Reserved */
+        uint32_t rsvd0;           /* Reserved (was nsid) */
+        uint32_t rsvd1;           /* Reserved */
 
-    /* CDW3-6: Data Block Descriptor (16 bytes) */
-    union {
-        struct { uint64_t prp1; uint64_t prp2; } prpl;
-        struct { uint64_t addr; uint32_t length; uint32_t type; } sgl;
-        struct { uint64_t addr; uint64_t rsvd; } hva;
-    } dbd;
+        /* CDW3-6: Data Block Descriptor (16 bytes) */
+        union {
+            struct { uint64_t prp1; uint64_t prp2; } prpl;
+            struct { uint64_t addr; uint32_t length; uint32_t type; } sgl;
+            struct { uint64_t addr; uint64_t rsvd; } hva;
+        } dbd;
 
-    /* CDW7: Data transfer size */
-    uint32_t data_xfer_size;
+        /* CDW7: Data transfer size */
+        uint32_t data_xfer_size;
 
-    /* CDW8-9: Reserved */
-    uint64_t rsvd2;
+        /* CDW8-9: Reserved */
+        uint64_t rsvd2;
 
-    /* CDW10-15: Command-specific parameters */
-    union {
-        /* P2P transfer parameters (for P2P_WRITE/P2P_READ commands) */
-        struct {
-            uint32_t length;       /* Transfer length in bytes */
-            uint32_t rsvd;
-            uint64_t peer_addr;    /* Peer device physical address (DPA) */
-            uint32_t peer_bdf;     /* Peer device Bus:Device:Function */
-            uint32_t pasid;        /* Process Address Space ID (if PASID enabled) */
-        } p2p;
+        /* CDW10-15: Command-specific parameters */
+        union {
+            /* P2P transfer parameters (for P2P_WRITE/P2P_READ commands) */
+            struct {
+                uint32_t length;       /* Transfer length in bytes */
+                uint32_t rsvd;
+                uint64_t peer_addr;    /* Peer device physical address (DPA) */
+                uint32_t peer_bdf;     /* Peer device Bus:Device:Function */
+                uint32_t pasid;        /* Process Address Space ID (if PASID enabled) */
+            } p2p;
 
-        /* Loopback test parameters */
-        struct {
-            uint32_t length;       /* Buffer length in bytes */
-            uint32_t pattern;      /* Data pattern for verification (optional) */
-            uint32_t flags;        /* Loopback-specific flags */
-            uint32_t rsvd[3];
-        } loopback;
+            /* Loopback test parameters */
+            struct {
+                uint32_t length;       /* Buffer length in bytes */
+                uint32_t pattern;      /* Data pattern for verification (optional) */
+                uint32_t flags;        /* Loopback-specific flags */
+                uint32_t rsvd[3];
+            } loopback;
 
-        /* Admin command parameters */
-        struct {
-            uint32_t cdw10;
-            uint32_t cdw11;
-            uint32_t cdw12;
-            uint32_t cdw13;
-            uint32_t cdw14;
-            uint32_t cdw15;
-        } admin;
-    } dw;
+            /* Admin command parameters */
+            struct {
+                uint32_t cdw10;
+                uint32_t cdw11;
+                uint32_t cdw12;
+                uint32_t cdw13;
+                uint32_t cdw14;
+                uint32_t cdw15;
+            } admin;
+        } dw;
+    };
+
+    /* Create IO Queue command (opcode 0x0D) */
+    struct QEMU_PACKED {
+        uint8_t  opcode;
+        uint8_t  flags;
+        uint16_t cid;
+        uint16_t qid;             /* Queue pair ID */
+        uint16_t irq_vector;      /* MSI-X interrupt vector */
+        uint64_t sq_base;         /* SQ DMA base address */
+        uint64_t cq_base;         /* CQ DMA base address */
+        uint32_t reserved[10];
+    } create_ioq;
+
+    /* Delete IO Queue command (opcode 0x0E) */
+    struct QEMU_PACKED {
+        uint8_t  opcode;
+        uint8_t  flags;
+        uint16_t cid;
+        uint16_t qid;             /* Queue pair ID to delete */
+        uint16_t reserved;
+        uint32_t reserved2[14];
+    } delete_ioq;
+
+    /* Memory Read command (opcode 0x05) */
+    struct QEMU_PACKED {
+        uint8_t  opcode;
+        uint8_t  flags;
+        uint16_t cid;
+        uint64_t dev_addr;         /* Device memory address (CMB offset) */
+        uint64_t host_addr;        /* Host buffer address (PRP1) */
+        uint64_t reserved0;
+        uint32_t length;           /* Transfer length in bytes */
+        uint32_t reserved[8];
+    } mem_read;
+
+    /* Memory Write command (opcode 0x06) */
+    struct QEMU_PACKED {
+        uint8_t  opcode;
+        uint8_t  flags;
+        uint16_t cid;
+        uint64_t dev_addr;         /* Device memory address (CMB offset) */
+        uint64_t host_addr;        /* Host buffer address (PRP1) */
+        uint64_t reserved0;
+        uint32_t length;           /* Transfer length in bytes */
+        uint32_t reserved[8];
+    } mem_write;
+
+    /* P2P Setup command (opcode 0x0F) */
+    struct QEMU_PACKED {
+        uint8_t  opcode;
+        uint8_t  flags;
+        uint16_t cid;
+        uint16_t peer_bdf;        /* Peer Bus:Device:Function */
+        uint8_t  slot;            /* Ring slot in our device (0-6) */
+        uint8_t  peer_slot;       /* Our slot in peer's device (0-6) */
+        uint64_t peer_bar0;       /* Peer's BAR0 physical address */
+        uint32_t reserved[12];
+    } p2p_setup;
+
+    /* P2P Teardown command (opcode 0x10) */
+    struct QEMU_PACKED {
+        uint8_t  opcode;
+        uint8_t  flags;
+        uint16_t cid;
+        uint16_t peer_bdf;        /* Peer BDF to unregister */
+        uint8_t  slot;            /* Ring slot to tear down (0-6) */
+        uint8_t  reserved;
+        uint32_t reserved2[14];
+    } p2p_teardown;
 } AccelCmd;
 
 QEMU_BUILD_BUG_ON(sizeof(AccelCmd) != 64);
@@ -495,18 +567,19 @@ void accel_irq_deassert(PCIeAccel *n, AccelCQueue *cq);
 
 /* Admin command handlers */
 uint16_t accel_admin_cmd(PCIeAccel *n, AccelRequest *req);
-uint16_t accel_cmd_create_sq(PCIeAccel *n, AccelRequest *req);
-uint16_t accel_cmd_create_cq(PCIeAccel *n, AccelRequest *req);
-uint16_t accel_cmd_delete_sq(PCIeAccel *n, AccelRequest *req);
-uint16_t accel_cmd_delete_cq(PCIeAccel *n, AccelRequest *req);
+uint16_t accel_cmd_create_ioq(PCIeAccel *n, AccelRequest *req);
+uint16_t accel_cmd_delete_ioq(PCIeAccel *n, AccelRequest *req);
 uint16_t accel_cmd_identify(PCIeAccel *n, AccelRequest *req);
 
 /* I/O command handlers */
 uint16_t accel_io_cmd(PCIeAccel *n, AccelRequest *req);
 uint16_t accel_cmd_loopback(PCIeAccel *n, AccelRequest *req);
+uint16_t accel_cmd_mem_read(PCIeAccel *n, AccelRequest *req);
+uint16_t accel_cmd_mem_write(PCIeAccel *n, AccelRequest *req);
 
 /* P2P DMA functions (implemented in pcie-accelerator-p2p.c) */
 uint16_t accel_cmd_p2p_setup(PCIeAccel *n, AccelRequest *req);
+uint16_t accel_cmd_p2p_teardown(PCIeAccel *n, AccelRequest *req);
 uint16_t accel_cmd_p2p_write(PCIeAccel *n, AccelRequest *req);
 uint16_t accel_cmd_p2p_read(PCIeAccel *n, AccelRequest *req);
 AccelP2PPeer *accel_find_p2p_peer(PCIeAccel *n, uint16_t bdf);
@@ -516,8 +589,6 @@ size_t accel_p2p_get_stats(PCIeAccel *n, void *buf, size_t size);
 void accel_p2p_dump_state(PCIeAccel *n);
 
 /* P2P Ring Buffer functions (implemented in pcie-accelerator-p2p.c) */
-uint16_t accel_cmd_p2p_ring_setup(PCIeAccel *n, AccelRequest *req);
-uint16_t accel_cmd_p2p_ring_teardown(PCIeAccel *n, AccelRequest *req);
 void accel_p2p_ring_doorbell(PCIeAccel *n, hwaddr offset, uint32_t val);
 void accel_process_p2p_ring(void *opaque);
 void accel_p2p_ring_reset(PCIeAccel *n);

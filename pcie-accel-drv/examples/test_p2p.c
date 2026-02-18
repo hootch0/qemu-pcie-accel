@@ -625,16 +625,16 @@ static int run_p2p_ring_setup_test(struct accel_device *dev1,
      * slot = our slot in peer's device (where peer produces inbound messages)
      * peer_slot = peer's slot in our device (our inbound ring for this peer)
      */
-    printf("Setting up P2P ring: dev1 -> dev2 (slot=0, peer_slot=0)...\n");
-    ret = accel_p2p_ring_setup(dev1, bdf2, 0, 0);
+    printf("Setting up P2P: dev1 -> dev2 (slot=1, peer_slot=1)...\n");
+    ret = accel_setup_p2p_peer(dev1, bdf2, 1, 1);
     if (ret != ACCEL_SUCCESS) {
         fprintf(stderr, "  FAILED: %s (ret=%d)\n", accel_strerror(ret), ret);
         return -1;
     }
     printf("  OK\n");
 
-    printf("Setting up P2P ring: dev2 -> dev1 (slot=0, peer_slot=0)...\n");
-    ret = accel_p2p_ring_setup(dev2, bdf1, 0, 0);
+    printf("Setting up P2P: dev2 -> dev1 (slot=1, peer_slot=1)...\n");
+    ret = accel_setup_p2p_peer(dev2, bdf1, 1, 1);
     if (ret != ACCEL_SUCCESS) {
         fprintf(stderr, "  FAILED: %s (ret=%d)\n", accel_strerror(ret), ret);
         return -1;
@@ -654,24 +654,24 @@ static int run_p2p_ring_setup_test(struct accel_device *dev1,
     printf("  Host-mediated P2P still functional\n\n");
 
     /* Tear down P2P rings */
-    printf("Tearing down P2P rings...\n");
-    ret = accel_p2p_ring_teardown(dev1, 0);
+    printf("Tearing down P2P...\n");
+    ret = accel_teardown_p2p_peer(dev1, bdf2, 1);
     if (ret != ACCEL_SUCCESS) {
         fprintf(stderr, "  dev1 teardown FAILED: %s (ret=%d)\n",
                 accel_strerror(ret), ret);
         return -1;
     }
-    printf("  dev1 slot 0: OK\n");
+    printf("  dev1 slot 1: OK\n");
 
-    ret = accel_p2p_ring_teardown(dev2, 0);
+    ret = accel_teardown_p2p_peer(dev2, bdf1, 1);
     if (ret != ACCEL_SUCCESS) {
         fprintf(stderr, "  dev2 teardown FAILED: %s (ret=%d)\n",
                 accel_strerror(ret), ret);
         return -1;
     }
-    printf("  dev2 slot 0: OK\n\n");
+    printf("  dev2 slot 1: OK\n\n");
 
-    printf("P2P ring buffer setup/teardown: PASSED\n");
+    printf("P2P setup/teardown: PASSED\n");
 
     return 0;
 }
@@ -798,7 +798,7 @@ int main(int argc, char *argv[])
     printf("\n");
 
     /* Create I/O queues on both devices */
-    ret = accel_create_queue(dev1, qid, 256, 256);
+    ret = accel_create_queue(dev1, qid);
     if (ret != ACCEL_SUCCESS) {
         fprintf(stderr, "Failed to create queue on dev1: %s\n",
                 accel_strerror(ret));
@@ -806,7 +806,7 @@ int main(int argc, char *argv[])
         goto cleanup;
     }
 
-    ret = accel_create_queue(dev2, qid, 256, 256);
+    ret = accel_create_queue(dev2, qid);
     if (ret != ACCEL_SUCCESS) {
         fprintf(stderr, "Failed to create queue on dev2: %s\n",
                 accel_strerror(ret));
@@ -814,9 +814,9 @@ int main(int argc, char *argv[])
         goto cleanup;
     }
 
-    /* Register P2P peers on both devices for bidirectional */
-    printf("Registering P2P peers...\n");
-    ret = accel_setup_p2p_peer(dev1, bdf2);
+    /* Register P2P peers + ring buffers on both devices */
+    printf("Setting up P2P peers with ring buffers...\n");
+    ret = accel_setup_p2p_peer(dev1, bdf2, 0, 0);
     if (ret != ACCEL_SUCCESS) {
         fprintf(stderr, "Failed to setup P2P peer on dev1: %s\n",
                 accel_strerror(ret));
@@ -824,14 +824,14 @@ int main(int argc, char *argv[])
         goto cleanup;
     }
 
-    ret = accel_setup_p2p_peer(dev2, bdf1);
+    ret = accel_setup_p2p_peer(dev2, bdf1, 0, 0);
     if (ret != ACCEL_SUCCESS) {
         fprintf(stderr, "Failed to setup P2P peer on dev2: %s\n",
                 accel_strerror(ret));
         ret = 1;
         goto cleanup;
     }
-    printf("P2P peers registered successfully\n\n");
+    printf("P2P peers registered with ring buffers successfully\n\n");
 
     /* Run tests */
     printf("Running P2P tests...\n\n");

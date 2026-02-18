@@ -88,123 +88,135 @@ static struct pci_dev *bdf_to_pci_device(struct accel_dev *dev, u16 bdf)
 }
 
 /**
- * accel_setup_p2p_peer - Set up a P2P peer device
+ * accel_setup_p2p_peer - Set up a P2P peer device and ring buffer
  * @dev: Device structure
- * @peer_bdf: Peer device BDF
+ * @params: P2P ring setup parameters (peer_bdf, slot, peer_slot, peer_bar0)
  *
- * Registers a peer device for P2P DMA transfers. This involves:
+ * Registers a peer device AND sets up a ring buffer slot in one command.
+ * This involves:
  * 1. Finding the peer PCI device
- * 2. Mapping the peer's BAR for direct access
- * 3. Sending P2P setup command to device
+ * 2. Mapping the peer's BAR2 CMB for direct access
+ * 3. Sending combined P2P_SETUP admin command to device
  * 4. Adding peer to our tracking list
  *
  * Returns: 0 on success, negative error code on failure
  */
-int accel_setup_p2p_peer(struct accel_dev *dev, u16 peer_bdf)
+int accel_setup_p2p_peer(struct accel_dev *dev,
+			 struct accel_p2p_ring_setup *params)
 {
 	struct accel_p2p_peer *peer;
 	struct pci_dev *peer_pdev;
-	struct accel_cmd cmd;
+	union accel_cmd cmd;
 	struct accel_cqe cqe;
 	unsigned long flags;
+	resource_size_t peer_bar0;
+	bool new_peer = false;
 	int ret;
 
-	/* Check if already registered - idempotent, return success */
-	if (accel_find_p2p_peer(dev, peer_bdf)) {
+	if (params->slot >= ACCEL_P2R_MAX_SLOTS ||
+	    params->peer_slot >= ACCEL_P2R_MAX_SLOTS)
+		return -EINVAL;
+
+	/* Check if already registered */
+	peer = accel_find_p2p_peer(dev, params->peer_bdf);
+	if (peer) {
 		dev_dbg(&dev->pdev->dev, "P2P peer 0x%04x already registered\n",
-			peer_bdf);
-		return 0;
-	}
-
-	/* Check peer count limit */
-	spin_lock_irqsave(&dev->p2p_lock, flags);
-	{
-		int count = 0;
-		struct accel_p2p_peer *p;
-		list_for_each_entry(p, &dev->p2p_peers, list)
-			count++;
-		if (count >= ACCEL_MAX_P2P_PEERS) {
-			spin_unlock_irqrestore(&dev->p2p_lock, flags);
-			dev_err(&dev->pdev->dev, "P2P peer limit reached\n");
-			return -ENOSPC;
+			params->peer_bdf);
+	} else {
+		/* Check peer count limit */
+		spin_lock_irqsave(&dev->p2p_lock, flags);
+		{
+			int count = 0;
+			struct accel_p2p_peer *p;
+			list_for_each_entry(p, &dev->p2p_peers, list)
+				count++;
+			if (count >= ACCEL_MAX_P2P_PEERS) {
+				spin_unlock_irqrestore(&dev->p2p_lock, flags);
+				dev_err(&dev->pdev->dev, "P2P peer limit reached\n");
+				return -ENOSPC;
+			}
 		}
-	}
-	spin_unlock_irqrestore(&dev->p2p_lock, flags);
+		spin_unlock_irqrestore(&dev->p2p_lock, flags);
 
-	/* Find the peer PCI device */
-	peer_pdev = bdf_to_pci_device(dev, peer_bdf);
-	if (!peer_pdev)
-		return -ENODEV;
+		/* Find the peer PCI device */
+		peer_pdev = bdf_to_pci_device(dev, params->peer_bdf);
+		if (!peer_pdev)
+			return -ENODEV;
 
-	/* Allocate peer structure */
-	peer = kzalloc(sizeof(*peer), GFP_KERNEL);
-	if (!peer) {
-		pci_dev_put(peer_pdev);
-		return -ENOMEM;
-	}
+		/* Allocate peer structure */
+		peer = kzalloc(sizeof(*peer), GFP_KERNEL);
+		if (!peer) {
+			pci_dev_put(peer_pdev);
+			return -ENOMEM;
+		}
 
-	peer->bdf = peer_bdf;
-	peer->pdev = peer_pdev;
+		peer->bdf = params->peer_bdf;
+		peer->pdev = peer_pdev;
+		new_peer = true;
 
-	/*
-	 * Check if P2P DMA is possible between these devices.
-	 * This requires them to be on the same PCIe switch or root complex.
-	 * Note: QEMU virtual devices don't expose proper topology info,
-	 * so this check will fail - but QEMU handles P2P internally.
-	 */
 #ifdef CONFIG_PCI_P2PDMA
-	{
-		int distance = pci_p2pdma_distance(dev->pdev, &peer_pdev->dev, false);
-		if (distance < 0) {
-			dev_dbg(&dev->pdev->dev,
-				"P2P DMA topology check failed for peer 0x%04x (distance=%d), "
-				"continuing (QEMU handles P2P internally)\n",
-				peer_bdf, distance);
+		{
+			int distance = pci_p2pdma_distance(dev->pdev,
+					&peer_pdev->dev, false);
+			if (distance < 0) {
+				dev_dbg(&dev->pdev->dev,
+					"P2P topology check failed for 0x%04x "
+					"(distance=%d), continuing\n",
+					params->peer_bdf, distance);
+			}
 		}
-	}
 #endif
 
-	/*
-	 * Map the peer's CMB (BAR2) for P2P transfers.
-	 * BAR2 is a RAM-backed region for peer-to-peer DMA operations.
-	 */
-	if (pci_resource_len(peer_pdev, 2) > 0) {
-		resource_size_t bar2_start = pci_resource_start(peer_pdev, 2);
-		resource_size_t cmb_size = pci_resource_len(peer_pdev, 2);
+		/* Map the peer's CMB (BAR2) */
+		if (pci_resource_len(peer_pdev, 2) > 0) {
+			resource_size_t bar2_start = pci_resource_start(peer_pdev, 2);
+			resource_size_t cmb_size = pci_resource_len(peer_pdev, 2);
 
-		peer->mem = ioremap(bar2_start, cmb_size);
-		if (peer->mem) {
-			peer->mem_size = cmb_size;
-			peer->mem_phys = bar2_start;
-			dev_info(&dev->pdev->dev,
-				"P2P: Mapped peer CMB (BAR2): phys=0x%llx size=%llu\n",
-				(unsigned long long)peer->mem_phys,
-				(unsigned long long)cmb_size);
-		} else {
-			dev_warn(&dev->pdev->dev,
-				"P2P: Failed to map peer CMB (BAR2)\n");
+			peer->mem = ioremap(bar2_start, cmb_size);
+			if (peer->mem) {
+				peer->mem_size = cmb_size;
+				peer->mem_phys = bar2_start;
+				dev_info(&dev->pdev->dev,
+					"P2P: Mapped peer CMB (BAR2): "
+					"phys=0x%llx size=%llu\n",
+					(unsigned long long)peer->mem_phys,
+					(unsigned long long)cmb_size);
+			} else {
+				dev_warn(&dev->pdev->dev,
+					"P2P: Failed to map peer CMB (BAR2)\n");
+			}
 		}
-	} else {
-		dev_warn(&dev->pdev->dev,
-			"P2P: Peer BAR2 (CMB) not available\n");
 	}
 
-	/*
-	 * Send P2P setup admin command to device.
-	 * This tells the QEMU device about the peer for P2P operations.
-	 *
-	 * CDW10[15:0] = peer BDF
-	 * CDW10[16]   = operation (0=register, 1=unregister)
-	 */
+	/* If BAR0 address not provided, read from peer's PCI config */
+	if (params->peer_bar0 == 0) {
+		peer_pdev = peer->pdev;
+		peer_bar0 = pci_resource_start(peer_pdev, 0);
+		if (!peer_bar0) {
+			dev_err(&dev->pdev->dev,
+				"P2P: peer 0x%x BAR0 not mapped\n",
+				params->peer_bdf);
+			ret = -EINVAL;
+			goto err_free;
+		}
+	} else {
+		peer_bar0 = params->peer_bar0;
+	}
+
+	/* Send combined P2P setup admin command */
 	memset(&cmd, 0, sizeof(cmd));
-	cmd.opcode = ACCEL_ADM_CMD_P2P_SETUP;
-	cmd.dw.admin.cdw10 = cpu_to_le32(peer_bdf);  /* Register (bit 16 = 0) */
+	cmd.p2p_setup.opcode = ACCEL_ADM_CMD_P2P_SETUP;
+	cmd.p2p_setup.peer_bdf = cpu_to_le16(params->peer_bdf);
+	cmd.p2p_setup.slot = params->slot;
+	cmd.p2p_setup.peer_slot = params->peer_slot;
+	cmd.p2p_setup.peer_bar0 = cpu_to_le64(peer_bar0);
 
 	ret = accel_submit_admin_cmd(dev, &cmd, &cqe);
 	if (ret) {
 		dev_err(&dev->pdev->dev,
-			"P2P setup admin command failed: %d\n", ret);
-		goto err_unmap;
+			"P2P setup failed: slot=%u peer=0x%x ret=%d\n",
+			params->slot, params->peer_bdf, ret);
+		goto err_free;
 	}
 
 	/* Check completion status code (bits [15:0]) */
@@ -213,44 +225,47 @@ int accel_setup_p2p_peer(struct accel_dev *dev, u16 peer_bdf)
 			"P2P setup failed: device status 0x%x\n",
 			le32_to_cpu(cqe.status) & 0xFFFF);
 		ret = -EIO;
-		goto err_unmap;
+		goto err_free;
 	}
 
-	/* Add to peer list */
-	spin_lock_irqsave(&dev->p2p_lock, flags);
-	list_add_tail(&peer->list, &dev->p2p_peers);
-	spin_unlock_irqrestore(&dev->p2p_lock, flags);
+	/* Add new peer to list */
+	if (new_peer) {
+		spin_lock_irqsave(&dev->p2p_lock, flags);
+		list_add_tail(&peer->list, &dev->p2p_peers);
+		spin_unlock_irqrestore(&dev->p2p_lock, flags);
+	}
 
 	dev_info(&dev->pdev->dev,
-		 "P2P peer registered: %04x:%02x:%02x.%x\n",
-		 pci_domain_nr(peer_pdev->bus),
-		 peer_pdev->bus->number,
-		 PCI_SLOT(peer_pdev->devfn),
-		 PCI_FUNC(peer_pdev->devfn));
+		 "P2P setup: peer=0x%04x slot=%u peer_slot=%u bar0=0x%llx\n",
+		 params->peer_bdf, params->slot, params->peer_slot,
+		 (unsigned long long)peer_bar0);
 
 	return 0;
 
-err_unmap:
-	if (peer->mem)
-		iounmap(peer->mem);
-	pci_dev_put(peer_pdev);
-	kfree(peer);
+err_free:
+	if (new_peer) {
+		if (peer->mem)
+			iounmap(peer->mem);
+		pci_dev_put(peer->pdev);
+		kfree(peer);
+	}
 	return ret;
 }
 
 /**
- * accel_remove_p2p_peer - Remove a P2P peer
+ * accel_remove_p2p_peer - Tear down ring buffer and remove P2P peer
  * @dev: Device structure
  * @peer_bdf: Peer device BDF
+ * @slot: Ring slot to tear down
  *
- * Unregisters a peer device.
+ * Sends P2P_TEARDOWN command to device and removes peer from tracking.
  *
  * Returns: 0 on success, negative error code on failure
  */
-static int __maybe_unused accel_remove_p2p_peer(struct accel_dev *dev, u16 peer_bdf)
+int accel_remove_p2p_peer(struct accel_dev *dev, u16 peer_bdf, u8 slot)
 {
 	struct accel_p2p_peer *peer;
-	struct accel_cmd cmd;
+	union accel_cmd cmd;
 	unsigned long flags;
 
 	/* Find the peer */
@@ -258,14 +273,11 @@ static int __maybe_unused accel_remove_p2p_peer(struct accel_dev *dev, u16 peer_
 	if (!peer)
 		return -ENOENT;
 
-	/*
-	 * Send P2P teardown admin command.
-	 * CDW10[15:0] = peer BDF
-	 * CDW10[16]   = operation (1=unregister)
-	 */
+	/* Send P2P teardown admin command */
 	memset(&cmd, 0, sizeof(cmd));
-	cmd.opcode = ACCEL_ADM_CMD_P2P_SETUP;
-	cmd.dw.admin.cdw10 = cpu_to_le32(peer_bdf | (1 << 16));
+	cmd.p2p_teardown.opcode = ACCEL_ADM_CMD_P2P_TEARDOWN;
+	cmd.p2p_teardown.peer_bdf = cpu_to_le16(peer_bdf);
+	cmd.p2p_teardown.slot = slot;
 
 	/* Best effort - don't fail if command fails */
 	accel_submit_admin_cmd(dev, &cmd, NULL);
@@ -296,7 +308,7 @@ static int __maybe_unused accel_remove_p2p_peer(struct accel_dev *dev, u16 peer_
 void accel_cleanup_p2p_peers(struct accel_dev *dev)
 {
 	struct accel_p2p_peer *peer, *tmp;
-	struct accel_cmd cmd;
+	union accel_cmd cmd;
 	unsigned long flags;
 	LIST_HEAD(remove_list);
 
@@ -307,14 +319,10 @@ void accel_cleanup_p2p_peers(struct accel_dev *dev)
 
 	/* Remove each peer */
 	list_for_each_entry_safe(peer, tmp, &remove_list, list) {
-		/*
-		 * Send P2P teardown admin command.
-		 * CDW10[15:0] = peer BDF
-		 * CDW10[16]   = operation (1=unregister)
-		 */
+		/* Send P2P teardown admin command */
 		memset(&cmd, 0, sizeof(cmd));
-		cmd.opcode = ACCEL_ADM_CMD_P2P_SETUP;
-		cmd.dw.admin.cdw10 = cpu_to_le32(peer->bdf | (1 << 16));
+		cmd.p2p_teardown.opcode = ACCEL_ADM_CMD_P2P_TEARDOWN;
+		cmd.p2p_teardown.peer_bdf = cpu_to_le16(peer->bdf);
 
 		/* Best effort - don't fail removal if command fails */
 		accel_submit_admin_cmd(dev, &cmd, NULL);
@@ -438,82 +446,3 @@ void accel_p2p_dma_unmap(struct accel_dev *dev, dma_addr_t dma_addr, size_t len)
 	dma_unmap_single(&dev->pdev->dev, dma_addr, len, DMA_BIDIRECTIONAL);
 }
 
-/*
- * ===== P2P Ring Buffer Support =====
- */
-
-/**
- * accel_p2p_ring_setup - Set up a P2P ring buffer with a peer
- * @dev: Device structure
- * @params: P2P ring setup parameters
- *
- * Issues an admin command to the device to set up a P2P ring buffer slot.
- * The peer's BAR0 address is read from PCI config space if not provided.
- *
- * Returns: 0 on success, negative errno on failure
- */
-int accel_p2p_ring_setup(struct accel_dev *dev,
-			 struct accel_p2p_ring_setup *params)
-{
-	struct accel_cmd cmd = {};
-	struct accel_cqe cqe = {};
-	struct pci_dev *peer_pdev;
-	resource_size_t peer_bar0;
-	int ret;
-
-	if (params->slot >= ACCEL_P2R_MAX_SLOTS ||
-	    params->peer_slot >= ACCEL_P2R_MAX_SLOTS)
-		return -EINVAL;
-
-	/* If BAR0 address not provided, read from peer's PCI config */
-	if (params->peer_bar0 == 0) {
-		peer_pdev = pci_get_domain_bus_and_slot(
-			pci_domain_nr(dev->pdev->bus),
-			(params->peer_bdf >> 8) & 0xFF,
-			PCI_DEVFN((params->peer_bdf >> 3) & 0x1F,
-				  params->peer_bdf & 0x7));
-		if (!peer_pdev) {
-			dev_err(&dev->pdev->dev,
-				"P2P ring: peer 0x%x not found\n",
-				params->peer_bdf);
-			return -ENODEV;
-		}
-
-		peer_bar0 = pci_resource_start(peer_pdev, 0);
-		pci_dev_put(peer_pdev);
-
-		if (!peer_bar0) {
-			dev_err(&dev->pdev->dev,
-				"P2P ring: peer 0x%x BAR0 not mapped\n",
-				params->peer_bdf);
-			return -EINVAL;
-		}
-	} else {
-		peer_bar0 = params->peer_bar0;
-	}
-
-	/* Build P2P ring setup admin command */
-	cmd.opcode = ACCEL_ADM_CMD_P2P_RING_SETUP;
-	cmd.dw.admin.cdw10 = cpu_to_le32(
-		(params->peer_bdf & 0xFFFF) |
-		((params->slot & 0xF) << 16) |
-		((params->peer_slot & 0xF) << 20));
-	cmd.dw.admin.cdw11 = cpu_to_le32(peer_bar0 & 0xFFFFFFFF);
-	cmd.dw.admin.cdw12 = cpu_to_le32((peer_bar0 >> 32) & 0xFFFFFFFF);
-
-	ret = accel_submit_admin_cmd(dev, &cmd, &cqe);
-	if (ret) {
-		dev_err(&dev->pdev->dev,
-			"P2P ring setup failed: slot=%u peer=0x%x ret=%d\n",
-			params->slot, params->peer_bdf, ret);
-		return ret;
-	}
-
-	dev_info(&dev->pdev->dev,
-		 "P2P ring setup: slot=%u peer=0x%x peer_slot=%u "
-		 "bar0=0x%llx\n",
-		 params->slot, params->peer_bdf, params->peer_slot,
-		 (unsigned long long)peer_bar0);
-
-	return 0;
-}

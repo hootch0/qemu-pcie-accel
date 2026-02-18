@@ -517,6 +517,134 @@ uint16_t accel_cmd_loopback(PCIeAccel *n, AccelRequest *req)
 }
 
 /**
+ * accel_cmd_mem_read - Read from device memory to host
+ * @n: Device state
+ * @req: Request structure
+ *
+ * Reads data from device CMB memory and DMA writes it to host memory.
+ *
+ * Command fields (from cmd->mem_read):
+ * - dev_addr:   CMB offset to read from (device source)
+ * - host_addr:  Host buffer DMA address (destination)
+ * - length:     Transfer length in bytes
+ *
+ * Returns: Status code
+ */
+uint16_t accel_cmd_mem_read(PCIeAccel *n, AccelRequest *req)
+{
+    AccelCmd *cmd = &req->cmd;
+    uint64_t dev_addr = le64_to_cpu(cmd->mem_read.dev_addr);
+    uint64_t host_addr = le64_to_cpu(cmd->mem_read.host_addr);
+    uint32_t length = le32_to_cpu(cmd->mem_read.length);
+    uint16_t status;
+    void *cmb_ram;
+    void *buf;
+
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: MEM_READ: dev_addr=0x%" PRIx64
+                  " host_addr=0x%" PRIx64 " length=%u\n",
+                  dev_addr, host_addr, length);
+
+    /* Validate length */
+    if (length == 0 || length > (1 * MiB)) {
+        return ACCEL_SC_INVALID_FIELD;
+    }
+
+    /* Validate device address range */
+    if (dev_addr + length > ACCEL_CMB_SIZE) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pcie-accel: MEM_READ dev_addr 0x%" PRIx64
+                      " + len %u exceeds CMB size\n", dev_addr, length);
+        return ACCEL_SC_LBA_OUT_OF_RANGE;
+    }
+
+    /* Allocate bounce buffer */
+    buf = g_malloc(length);
+    if (!buf) {
+        return ACCEL_SC_INTERNAL_ERROR;
+    }
+
+    /* Copy from device CMB to bounce buffer */
+    cmb_ram = memory_region_get_ram_ptr(&n->cmb);
+    memcpy(buf, (uint8_t *)cmb_ram + dev_addr, length);
+
+    /* DMA write to host memory */
+    status = accel_dma_write_safe(n, host_addr, buf, length);
+    g_free(buf);
+
+    if (status == ACCEL_SC_SUCCESS) {
+        req->cqe.result = cpu_to_le64(length);
+    }
+
+    return status;
+}
+
+/**
+ * accel_cmd_mem_write - Write from host to device memory
+ * @n: Device state
+ * @req: Request structure
+ *
+ * DMA reads data from host memory and writes it to device CMB memory.
+ *
+ * Command fields (from cmd->mem_write):
+ * - dev_addr:   CMB offset to write to (device destination)
+ * - host_addr:  Host buffer DMA address (source)
+ * - length:     Transfer length in bytes
+ *
+ * Returns: Status code
+ */
+uint16_t accel_cmd_mem_write(PCIeAccel *n, AccelRequest *req)
+{
+    AccelCmd *cmd = &req->cmd;
+    uint64_t dev_addr = le64_to_cpu(cmd->mem_write.dev_addr);
+    uint64_t host_addr = le64_to_cpu(cmd->mem_write.host_addr);
+    uint32_t length = le32_to_cpu(cmd->mem_write.length);
+    uint16_t status;
+    void *cmb_ram;
+    void *buf;
+
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: MEM_WRITE: dev_addr=0x%" PRIx64
+                  " host_addr=0x%" PRIx64 " length=%u\n",
+                  dev_addr, host_addr, length);
+
+    /* Validate length */
+    if (length == 0 || length > (1 * MiB)) {
+        return ACCEL_SC_INVALID_FIELD;
+    }
+
+    /* Validate device address range */
+    if (dev_addr + length > ACCEL_CMB_SIZE) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pcie-accel: MEM_WRITE dev_addr 0x%" PRIx64
+                      " + len %u exceeds CMB size\n", dev_addr, length);
+        return ACCEL_SC_LBA_OUT_OF_RANGE;
+    }
+
+    /* Allocate bounce buffer */
+    buf = g_malloc(length);
+    if (!buf) {
+        return ACCEL_SC_INTERNAL_ERROR;
+    }
+
+    /* DMA read from host memory */
+    status = accel_dma_read_safe(n, host_addr, buf, length);
+    if (status != ACCEL_SC_SUCCESS) {
+        g_free(buf);
+        return status;
+    }
+
+    /* Copy from bounce buffer to device CMB */
+    cmb_ram = memory_region_get_ram_ptr(&n->cmb);
+    memcpy((uint8_t *)cmb_ram + dev_addr, buf, length);
+    g_free(buf);
+
+    req->cqe.result = cpu_to_le64(length);
+
+    return ACCEL_SC_SUCCESS;
+}
+
+/**
  * accel_io_cmd - Dispatch I/O commands
  * @n: Device state
  * @req: Request structure
@@ -535,8 +663,11 @@ uint16_t accel_io_cmd(PCIeAccel *n, AccelRequest *req)
         [ACCEL_CMD_LOOPBACK]   = "LOOPBACK",
         [ACCEL_CMD_P2P_WRITE]  = "P2P_WRITE",
         [ACCEL_CMD_P2P_READ]   = "P2P_READ",
+        [4]                    = NULL,
+        [ACCEL_CMD_MEM_READ]   = "MEM_READ",
+        [ACCEL_CMD_MEM_WRITE]  = "MEM_WRITE",
     };
-    const char *name = (cmd->opcode <= ACCEL_CMD_P2P_READ && io_names[cmd->opcode])
+    const char *name = (cmd->opcode <= ACCEL_CMD_MEM_WRITE && io_names[cmd->opcode])
                        ? io_names[cmd->opcode] : "UNKNOWN";
     qemu_log("pcie-accel: IO CMD %s (0x%02x) sqid=%u cid=%u\n",
              name, cmd->opcode, req->sq->sqid, le16_to_cpu(cmd->cid));
@@ -550,6 +681,12 @@ uint16_t accel_io_cmd(PCIeAccel *n, AccelRequest *req)
 
     case ACCEL_CMD_P2P_READ:
         return accel_cmd_p2p_read(n, req);
+
+    case ACCEL_CMD_MEM_READ:
+        return accel_cmd_mem_read(n, req);
+
+    case ACCEL_CMD_MEM_WRITE:
+        return accel_cmd_mem_write(n, req);
 
     default:
         trace_pcie_accel_err_invalid_cmd(req->sq->sqid, cmd->opcode);
@@ -606,46 +743,48 @@ uint16_t accel_cmd_identify(PCIeAccel *n, AccelRequest *req)
 }
 
 /**
- * accel_cmd_create_cq - Create I/O completion queue
+ * accel_cmd_create_ioq - Create I/O queue pair (CQ + SQ)
  * @n: Device state
  * @req: Request structure
  *
- * Creates a completion queue with the specified parameters.
+ * Creates both a completion queue and submission queue with the same qid.
+ * Queue depth is derived from the CAP register DEPTH field.
  */
-uint16_t accel_cmd_create_cq(PCIeAccel *n, AccelRequest *req)
+uint16_t accel_cmd_create_ioq(PCIeAccel *n, AccelRequest *req)
 {
     AccelCmd *cmd = &req->cmd;
-    uint16_t cqid = le32_to_cpu(cmd->dw.admin.cdw10) & 0xFFFF;
-    uint16_t qsize = (le32_to_cpu(cmd->dw.admin.cdw10) >> 16) & 0xFFFF;
-    uint16_t vector = le32_to_cpu(cmd->dw.admin.cdw11) & 0xFFFF;
-    uint16_t irq_en = (le32_to_cpu(cmd->dw.admin.cdw11) >> 16) & 0x1;
-    uint64_t prp1 = le64_to_cpu(cmd->dbd.prpl.prp1);
+    uint16_t qid = le16_to_cpu(cmd->create_ioq.qid);
+    uint16_t vector = le16_to_cpu(cmd->create_ioq.irq_vector);
+    uint64_t sq_base = le64_to_cpu(cmd->create_ioq.sq_base);
+    uint64_t cq_base = le64_to_cpu(cmd->create_ioq.cq_base);
+    uint32_t depth_val = (n->bar.cap >> ACCEL_CAP_DEPTH_SHIFT) & ACCEL_CAP_DEPTH_MASK;
+    uint32_t qsize = 1 << depth_val;
+    uint16_t irq_en = (vector > 0) ? 1 : 0;
     AccelCQueue *cq;
+    AccelSQueue *sq;
 
     qemu_log_mask(LOG_UNIMP,
-                  "pcie-accel: CREATE_CQ: cqid=%u qsize=%u prp1=0x%" PRIx64
-                  " vector=%u irq_en=%u\n",
-                  cqid, qsize, prp1, vector, irq_en);
+                  "pcie-accel: CREATE_IOQ: qid=%u sq_base=0x%" PRIx64
+                  " cq_base=0x%" PRIx64 " vector=%u depth=%u\n",
+                  qid, sq_base, cq_base, vector, qsize);
 
-    /* Validate CQ ID */
-    if (cqid == 0 || cqid > n->max_ioqpairs) {
+    /* Validate queue ID */
+    if (qid == 0 || qid > n->max_ioqpairs) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "pcie-accel: CREATE_CQ invalid cqid %u (max=%u)\n",
-                      cqid, n->max_ioqpairs);
+                      "pcie-accel: CREATE_IOQ invalid qid %u (max=%u)\n",
+                      qid, n->max_ioqpairs);
         return ACCEL_SC_INVALID_QUEUE_ID;
     }
 
-    if (n->cq[cqid] != NULL) {
+    if (n->cq[qid] != NULL || n->sq[qid] != NULL) {
         return ACCEL_SC_QUEUE_ALREADY_EXISTS;
     }
 
-    /* Validate queue size */
-    if (qsize < 1 || qsize > ACCEL_MAX_QUEUE_ENTRIES) {
-        return ACCEL_SC_INVALID_QUEUE_SIZE;
-    }
-
     /* Validate address alignment */
-    if (prp1 & (n->page_size - 1)) {
+    if (cq_base & (n->page_size - 1)) {
+        return ACCEL_SC_INVALID_QUEUE_ADDR;
+    }
+    if (sq_base & (n->page_size - 1)) {
         return ACCEL_SC_INVALID_QUEUE_ADDR;
     }
 
@@ -654,16 +793,21 @@ uint16_t accel_cmd_create_cq(PCIeAccel *n, AccelRequest *req)
         return ACCEL_SC_INVALID_IRQ_VECTOR;
     }
 
-    /* Allocate and initialize CQ */
+    /* Create CQ */
     cq = g_malloc0(sizeof(AccelCQueue));
-    accel_init_cq(cq, n, prp1, cqid, vector, qsize + 1, irq_en);
+    accel_init_cq(cq, n, cq_base, qid, vector, qsize, irq_en);
+    n->cq[qid] = cq;
 
-    n->cq[cqid] = cq;
-    n->conf_ioqpairs = MAX(n->conf_ioqpairs, cqid);
+    /* Create SQ */
+    sq = g_malloc0(sizeof(AccelSQueue));
+    accel_init_sq(sq, n, sq_base, qid, qid, qsize);
+    n->sq[qid] = sq;
+
+    n->conf_ioqpairs = MAX(n->conf_ioqpairs, qid);
 
     qemu_log_mask(LOG_UNIMP,
-                  "pcie-accel: CREATE_CQ success: cqid=%u size=%u\n",
-                  cqid, qsize + 1);
+                  "pcie-accel: CREATE_IOQ success: qid=%u size=%u vector=%u\n",
+                  qid, qsize, vector);
 
     /* Update device status */
     n->bar.devstat = (n->bar.devstat & ~(0xFF << ACCEL_DEVSTAT_QUEUE_PAIRS_SHIFT)) |
@@ -673,119 +817,43 @@ uint16_t accel_cmd_create_cq(PCIeAccel *n, AccelRequest *req)
 }
 
 /**
- * accel_cmd_create_sq - Create I/O submission queue
+ * accel_cmd_delete_ioq - Delete I/O queue pair (SQ + CQ)
  * @n: Device state
  * @req: Request structure
  *
- * Creates a submission queue associated with a completion queue.
+ * Deletes both the submission queue and completion queue with the given qid.
  */
-uint16_t accel_cmd_create_sq(PCIeAccel *n, AccelRequest *req)
+uint16_t accel_cmd_delete_ioq(PCIeAccel *n, AccelRequest *req)
 {
     AccelCmd *cmd = &req->cmd;
-    uint16_t sqid = le32_to_cpu(cmd->dw.admin.cdw10) & 0xFFFF;
-    uint16_t qsize = (le32_to_cpu(cmd->dw.admin.cdw10) >> 16) & 0xFFFF;
-    uint16_t cqid = le32_to_cpu(cmd->dw.admin.cdw11) & 0xFFFF;
-    uint64_t prp1 = le64_to_cpu(cmd->dbd.prpl.prp1);
+    uint16_t qid = le16_to_cpu(cmd->delete_ioq.qid);
     AccelSQueue *sq;
-
-    qemu_log_mask(LOG_UNIMP,
-                  "pcie-accel: CREATE_SQ: sqid=%u qsize=%u cqid=%u prp1=0x%" PRIx64 "\n",
-                  sqid, qsize, cqid, prp1);
-
-    /* Validate SQ ID */
-    if (sqid == 0 || sqid > n->max_ioqpairs) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "pcie-accel: CREATE_SQ invalid sqid %u (max=%u)\n",
-                      sqid, n->max_ioqpairs);
-        return ACCEL_SC_INVALID_QUEUE_ID;
-    }
-
-    if (n->sq[sqid] != NULL) {
-        return ACCEL_SC_QUEUE_ALREADY_EXISTS;
-    }
-
-    /* Validate CQ ID */
-    if (!accel_check_cqid(n, cqid)) {
-        return ACCEL_SC_INVALID_QUEUE_ID;
-    }
-
-    /* Validate queue size */
-    if (qsize < 1 || qsize > ACCEL_MAX_QUEUE_ENTRIES) {
-        return ACCEL_SC_INVALID_QUEUE_SIZE;
-    }
-
-    /* Validate address alignment */
-    if (prp1 & (n->page_size - 1)) {
-        return ACCEL_SC_INVALID_QUEUE_ADDR;
-    }
-
-    /* Allocate and initialize SQ */
-    sq = g_malloc0(sizeof(AccelSQueue));
-    accel_init_sq(sq, n, prp1, sqid, cqid, qsize + 1);
-
-    n->sq[sqid] = sq;
-
-    qemu_log_mask(LOG_UNIMP,
-                  "pcie-accel: CREATE_SQ success: sqid=%u size=%u cqid=%u\n",
-                  sqid, qsize + 1, cqid);
-
-    return ACCEL_SC_SUCCESS;
-}
-
-/**
- * accel_cmd_delete_cq - Delete I/O completion queue
- * @n: Device state
- * @req: Request structure
- */
-uint16_t accel_cmd_delete_cq(PCIeAccel *n, AccelRequest *req)
-{
-    AccelCmd *cmd = &req->cmd;
-    uint16_t cqid = le32_to_cpu(cmd->dw.admin.cdw10) & 0xFFFF;
     AccelCQueue *cq;
 
-    if (!accel_check_cqid(n, cqid) || cqid == 0) {
+    if (qid == 0 || qid > n->max_ioqpairs) {
         return ACCEL_SC_INVALID_QUEUE_ID;
     }
 
-    cq = n->cq[cqid];
-
-    /* Check if any SQs are still using this CQ */
-    if (!QTAILQ_EMPTY(&cq->sq_list)) {
-        return ACCEL_SC_INVALID_QUEUE_ID;  /* CQ still in use */
-    }
-
-    accel_free_cq(cq, n);
-    n->cq[cqid] = NULL;
-
-    return ACCEL_SC_SUCCESS;
-}
-
-/**
- * accel_cmd_delete_sq - Delete I/O submission queue
- * @n: Device state
- * @req: Request structure
- */
-uint16_t accel_cmd_delete_sq(PCIeAccel *n, AccelRequest *req)
-{
-    AccelCmd *cmd = &req->cmd;
-    uint16_t sqid = le32_to_cpu(cmd->dw.admin.cdw10) & 0xFFFF;
-    AccelSQueue *sq;
-
-    if (!accel_check_sqid(n, sqid) || sqid == 0) {
+    if (!accel_check_sqid(n, qid) || !accel_check_cqid(n, qid)) {
         return ACCEL_SC_INVALID_QUEUE_ID;
     }
 
-    sq = n->sq[sqid];
+    sq = n->sq[qid];
+    cq = n->cq[qid];
 
-    /* Abort any in-flight requests */
+    /* Abort any in-flight requests on the SQ */
     AccelRequest *req_iter, *next;
     QTAILQ_FOREACH_SAFE(req_iter, &sq->out_req_list, entry, next) {
         req_iter->status = ACCEL_SC_CMD_ABORT_SQID;
-        accel_enqueue_req_completion(n->cq[sq->cqid], req_iter);
+        accel_enqueue_req_completion(cq, req_iter);
     }
 
+    /* Delete SQ first, then CQ */
     accel_free_sq(sq, n);
-    n->sq[sqid] = NULL;
+    n->sq[qid] = NULL;
+
+    accel_free_cq(cq, n);
+    n->cq[qid] = NULL;
 
     return ACCEL_SC_SUCCESS;
 }
@@ -805,35 +873,25 @@ uint16_t accel_admin_cmd(PCIeAccel *n, AccelRequest *req)
 
     static const char *adm_names[] = {
         [ACCEL_ADM_CMD_IDENTIFY]          = "IDENTIFY",
-        [ACCEL_ADM_CMD_DELETE_SQ]         = "DELETE_SQ",
-        [ACCEL_ADM_CMD_CREATE_SQ]         = "CREATE_SQ",
-        [ACCEL_ADM_CMD_DELETE_CQ]         = "DELETE_CQ",
-        [ACCEL_ADM_CMD_CREATE_CQ]         = "CREATE_CQ",
         [ACCEL_ADM_CMD_SET_FEATURES]      = "SET_FEATURES",
         [ACCEL_ADM_CMD_GET_FEATURES]      = "GET_FEATURES",
+        [ACCEL_ADM_CMD_CREATE_IOQ]        = "CREATE_IOQ",
+        [ACCEL_ADM_CMD_DELETE_IOQ]        = "DELETE_IOQ",
         [ACCEL_ADM_CMD_P2P_SETUP]         = "P2P_SETUP",
         [ACCEL_ADM_CMD_P2P_TEARDOWN]      = "P2P_TEARDOWN",
-        [ACCEL_ADM_CMD_P2P_RING_SETUP]    = "P2P_RING_SETUP",
-        [ACCEL_ADM_CMD_P2P_RING_TEARDOWN] = "P2P_RING_TEARDOWN",
     };
-    const char *name = (cmd->opcode <= ACCEL_ADM_CMD_P2P_RING_TEARDOWN &&
+    const char *name = (cmd->opcode <= ACCEL_ADM_CMD_P2P_TEARDOWN &&
                          adm_names[cmd->opcode]) ? adm_names[cmd->opcode]
                                                   : "UNKNOWN";
     qemu_log("pcie-accel: ADMIN CMD %s (0x%02x) cid=%u\n",
              name, cmd->opcode, le16_to_cpu(cmd->cid));
 
     switch (cmd->opcode) {
-    case ACCEL_ADM_CMD_DELETE_SQ:
-        return accel_cmd_delete_sq(n, req);
+    case ACCEL_ADM_CMD_CREATE_IOQ:
+        return accel_cmd_create_ioq(n, req);
 
-    case ACCEL_ADM_CMD_CREATE_SQ:
-        return accel_cmd_create_sq(n, req);
-
-    case ACCEL_ADM_CMD_DELETE_CQ:
-        return accel_cmd_delete_cq(n, req);
-
-    case ACCEL_ADM_CMD_CREATE_CQ:
-        return accel_cmd_create_cq(n, req);
+    case ACCEL_ADM_CMD_DELETE_IOQ:
+        return accel_cmd_delete_ioq(n, req);
 
     case ACCEL_ADM_CMD_IDENTIFY:
         return accel_cmd_identify(n, req);
@@ -841,11 +899,8 @@ uint16_t accel_admin_cmd(PCIeAccel *n, AccelRequest *req)
     case ACCEL_ADM_CMD_P2P_SETUP:
         return accel_cmd_p2p_setup(n, req);
 
-    case ACCEL_ADM_CMD_P2P_RING_SETUP:
-        return accel_cmd_p2p_ring_setup(n, req);
-
-    case ACCEL_ADM_CMD_P2P_RING_TEARDOWN:
-        return accel_cmd_p2p_ring_teardown(n, req);
+    case ACCEL_ADM_CMD_P2P_TEARDOWN:
+        return accel_cmd_p2p_teardown(n, req);
 
     default:
         trace_pcie_accel_err_invalid_cmd(0, cmd->opcode);

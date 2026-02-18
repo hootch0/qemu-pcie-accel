@@ -75,21 +75,19 @@ extern "C" {
 
 /* Admin commands */
 #define ACCEL_ADM_CMD_IDENTIFY      0x00
-#define ACCEL_ADM_CMD_DELETE_SQ     0x01
-#define ACCEL_ADM_CMD_CREATE_SQ     0x02
-#define ACCEL_ADM_CMD_DELETE_CQ     0x04
-#define ACCEL_ADM_CMD_CREATE_CQ     0x05
 #define ACCEL_ADM_CMD_SET_FEATURES  0x09
 #define ACCEL_ADM_CMD_GET_FEATURES  0x0A
-#define ACCEL_ADM_CMD_P2P_SETUP     0x10
-#define ACCEL_ADM_CMD_P2P_TEARDOWN  0x11
-#define ACCEL_ADM_CMD_P2P_RING_SETUP 0x12
-#define ACCEL_ADM_CMD_P2P_RING_TEARDOWN 0x13
+#define ACCEL_ADM_CMD_CREATE_IOQ    0x0D
+#define ACCEL_ADM_CMD_DELETE_IOQ    0x0E
+#define ACCEL_ADM_CMD_P2P_SETUP     0x0F
+#define ACCEL_ADM_CMD_P2P_TEARDOWN  0x10
 
 /* I/O commands */
 #define ACCEL_CMD_LOOPBACK          0x01
 #define ACCEL_CMD_P2P_WRITE         0x02
 #define ACCEL_CMD_P2P_READ          0x03
+#define ACCEL_CMD_MEM_READ          0x05
+#define ACCEL_CMD_MEM_WRITE         0x06
 
 /*
  * ===== Status Codes =====
@@ -115,51 +113,123 @@ extern "C" {
  */
 
 /**
- * struct accel_cmd - Submission queue entry (64 bytes)
+ * union accel_cmd - Submission queue entry (64 bytes)
  *
  * Command structure for submitting operations to the device.
  * Layout matches the device's command format.
  */
-struct accel_cmd {
-    uint8_t  opcode;          /* Command opcode */
-    uint8_t  flags;           /* [1:0]=DBD type, [2]=PASID, [3]=PRIV */
-    uint16_t cid;             /* Command identifier */
-    uint32_t rsvd0;           /* Reserved (was nsid) */
-    uint32_t rsvd1;           /* Reserved */
+union accel_cmd {
+    /* Generic command format */
+    struct __attribute__((packed)) {
+        uint8_t  opcode;          /* Command opcode */
+        uint8_t  flags;           /* [1:0]=DBD type, [2]=PASID, [3]=PRIV */
+        uint16_t cid;             /* Command identifier */
+        uint32_t rsvd0;           /* Reserved (was nsid) */
+        uint32_t rsvd1;           /* Reserved */
 
-    /* Data Block Descriptor (CDW3-6, 16 bytes) */
-    union {
-        struct { uint64_t prp1; uint64_t prp2; } prpl;
-        struct { uint64_t addr; uint32_t length; uint32_t type; } sgl;
-        struct { uint64_t addr; uint64_t rsvd; } hva;
-    } dbd;
+        /* Data Block Descriptor (CDW3-6, 16 bytes) */
+        union {
+            struct { uint64_t prp1; uint64_t prp2; } prpl;
+            struct { uint64_t addr; uint32_t length; uint32_t type; } sgl;
+            struct { uint64_t addr; uint64_t rsvd; } hva;
+        } dbd;
 
-    uint32_t data_xfer_size;  /* Data transfer size in bytes */
-    uint64_t rsvd2;           /* Reserved */
+        uint32_t data_xfer_size;  /* Data transfer size in bytes */
+        uint64_t rsvd2;           /* Reserved */
 
-    union {
-        struct {
-            uint32_t length;      /* Transfer length */
-            uint32_t rsvd;
-            uint64_t peer_addr;   /* Peer device address */
-            uint32_t peer_bdf;    /* Peer BDF */
-            uint32_t pasid;       /* PASID if enabled */
-        } p2p;
-        struct {
-            uint32_t length;      /* Buffer length */
-            uint32_t pattern;     /* Data pattern */
-            uint32_t flags;
-            uint32_t rsvd[3];
-        } loopback;
-        struct {
-            uint32_t cdw10;
-            uint32_t cdw11;
-            uint32_t cdw12;
-            uint32_t cdw13;
-            uint32_t cdw14;
-            uint32_t cdw15;
-        } admin;
-    } dw;
+        union {
+            struct {
+                uint32_t length;      /* Transfer length */
+                uint32_t rsvd;
+                uint64_t peer_addr;   /* Peer device address */
+                uint32_t peer_bdf;    /* Peer BDF */
+                uint32_t pasid;       /* PASID if enabled */
+            } p2p;
+            struct {
+                uint32_t length;      /* Buffer length */
+                uint32_t pattern;     /* Data pattern */
+                uint32_t flags;
+                uint32_t rsvd[3];
+            } loopback;
+            struct {
+                uint32_t cdw10;
+                uint32_t cdw11;
+                uint32_t cdw12;
+                uint32_t cdw13;
+                uint32_t cdw14;
+                uint32_t cdw15;
+            } admin;
+        } dw;
+    };
+
+    /* Create IO Queue command (opcode 0x0D) */
+    struct __attribute__((packed)) {
+        uint8_t  opcode;
+        uint8_t  flags;
+        uint16_t cid;
+        uint16_t qid;
+        uint16_t irq_vector;
+        uint64_t sq_base;
+        uint64_t cq_base;
+        uint32_t reserved[10];
+    } create_ioq;
+
+    /* Delete IO Queue command (opcode 0x0E) */
+    struct __attribute__((packed)) {
+        uint8_t  opcode;
+        uint8_t  flags;
+        uint16_t cid;
+        uint16_t qid;
+        uint16_t reserved;
+        uint32_t reserved2[14];
+    } delete_ioq;
+
+    /* P2P Setup command (opcode 0x0F) */
+    struct __attribute__((packed)) {
+        uint8_t  opcode;
+        uint8_t  flags;
+        uint16_t cid;
+        uint16_t peer_bdf;
+        uint8_t  slot;
+        uint8_t  peer_slot;
+        uint64_t peer_bar0;
+        uint32_t reserved[12];
+    } p2p_setup;
+
+    /* P2P Teardown command (opcode 0x10) */
+    struct __attribute__((packed)) {
+        uint8_t  opcode;
+        uint8_t  flags;
+        uint16_t cid;
+        uint16_t peer_bdf;
+        uint8_t  slot;
+        uint8_t  reserved;
+        uint32_t reserved2[14];
+    } p2p_teardown;
+
+    /* Memory Read command (opcode 0x05) */
+    struct __attribute__((packed)) {
+        uint8_t  opcode;
+        uint8_t  flags;
+        uint16_t cid;
+        uint64_t dev_addr;
+        uint64_t host_addr;
+        uint64_t reserved0;
+        uint32_t length;
+        uint32_t reserved[8];
+    } mem_read;
+
+    /* Memory Write command (opcode 0x06) */
+    struct __attribute__((packed)) {
+        uint8_t  opcode;
+        uint8_t  flags;
+        uint16_t cid;
+        uint64_t dev_addr;
+        uint64_t host_addr;
+        uint64_t reserved0;
+        uint32_t length;
+        uint32_t reserved[8];
+    } mem_write;
 } __attribute__((packed));
 
 /**
@@ -289,13 +359,12 @@ const char *accel_strerror(int err);
  * accel_create_queue - Create an I/O queue pair
  * @dev: Device handle
  * @qid: Queue ID (1 to max_queues)
- * @sq_size: Submission queue size (entries)
- * @cq_size: Completion queue size (entries)
+ *
+ * Queue depth is determined by the device's CAP register DEPTH field.
  *
  * Returns: ACCEL_SUCCESS or error code
  */
-int accel_create_queue(struct accel_device *dev, uint16_t qid,
-                       uint16_t sq_size, uint16_t cq_size);
+int accel_create_queue(struct accel_device *dev, uint16_t qid);
 
 /**
  * accel_delete_queue - Delete an I/O queue pair
@@ -322,7 +391,7 @@ int accel_delete_queue(struct accel_device *dev, uint16_t qid);
  * Returns: ACCEL_SUCCESS or error code
  */
 int accel_submit_cmd(struct accel_device *dev, uint16_t qid,
-                     struct accel_cmd *cmd, struct accel_cqe *cqe,
+                     union accel_cmd *cmd, struct accel_cqe *cqe,
                      uint32_t timeout_ms);
 
 /**
@@ -392,7 +461,7 @@ int accel_p2p_read(struct accel_device *dev, uint16_t qid,
  * Returns: ACCEL_SUCCESS or error code
  */
 int accel_async_submit_cmd(struct accel_device *dev, uint16_t qid,
-                           struct accel_cmd *cmd,
+                           union accel_cmd *cmd,
                            struct accel_async_token *token);
 
 /**
@@ -555,39 +624,34 @@ void accel_cancel_batch(struct accel_device *dev);
  */
 
 /**
- * accel_setup_p2p_peer - Register a P2P peer device
- * @dev: Device handle
- * @peer_bdf: Peer device BDF (bus << 8 | devfn)
- *
- * Returns: ACCEL_SUCCESS or error code
- */
-int accel_setup_p2p_peer(struct accel_device *dev, uint16_t peer_bdf);
-
-/**
- * accel_p2p_ring_setup - Set up P2P ring buffer via admin command
+ * accel_setup_p2p_peer - Register P2P peer and set up ring buffer
  * @dev: Device handle
  * @peer_bdf: Peer device BDF (bus << 8 | devfn)
  * @slot: Slot for this peer in our device (0-6)
  * @peer_slot: Our slot in the peer's device (0-6)
  *
- * Issues admin command to configure a P2P ring buffer slot on the device.
- * The driver resolves peer BAR0 address from PCI config space.
- * After setup, the devices exchange messages directly via ring buffers
- * in BAR2 CMB without host involvement.
+ * Registers a P2P peer device and sets up a ring buffer slot in one
+ * admin command (opcode 0x0F). The driver resolves peer BAR0 address
+ * from PCI config space.
  *
  * Returns: ACCEL_SUCCESS or error code
  */
-int accel_p2p_ring_setup(struct accel_device *dev, uint16_t peer_bdf,
+int accel_setup_p2p_peer(struct accel_device *dev, uint16_t peer_bdf,
                          uint8_t slot, uint8_t peer_slot);
 
 /**
- * accel_p2p_ring_teardown - Tear down a P2P ring buffer
+ * accel_teardown_p2p_peer - Tear down ring buffer and unregister peer
  * @dev: Device handle
- * @slot: Slot number to tear down (0-6)
+ * @peer_bdf: Peer device BDF
+ * @slot: Ring slot to tear down (0-6)
+ *
+ * Tears down a P2P ring buffer slot and unregisters the peer device
+ * in one admin command (opcode 0x10).
  *
  * Returns: ACCEL_SUCCESS or error code
  */
-int accel_p2p_ring_teardown(struct accel_device *dev, uint8_t slot);
+int accel_teardown_p2p_peer(struct accel_device *dev, uint16_t peer_bdf,
+                            uint8_t slot);
 
 /*
  * ----- Memory Mapping -----

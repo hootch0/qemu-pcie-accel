@@ -101,7 +101,7 @@ static int accel_uring_cmd_submit(struct io_uring_cmd *ioucmd,
 				  unsigned int issue_flags)
 {
 	struct accel_queue *queue;
-	struct accel_cmd cmd;
+	union accel_cmd cmd;
 	dma_addr_t data_dma = 0;
 	void *data_buf = NULL;
 	void __user *user_buf = NULL;
@@ -242,7 +242,7 @@ static int accel_uring_cmd_create_queue(struct io_uring_cmd *ioucmd,
 	int ret;
 
 	mutex_lock(&dev->dev_mutex);
-	ret = accel_create_queue(dev, qid, sq_size, cq_size);
+	ret = accel_create_queue(dev, qid);
 	mutex_unlock(&dev->dev_mutex);
 
 	return ret;
@@ -278,7 +278,7 @@ static int accel_uring_cmd_delete_queue(struct io_uring_cmd *ioucmd,
  * @dev: Device structure
  * @ucmd: User command structure
  *
- * Sets up a P2P peer device. This is a synchronous operation.
+ * Sets up a P2P peer device and ring buffer. This is a synchronous operation.
  *
  * Returns: 0 on success, negative error on failure
  */
@@ -286,11 +286,16 @@ static int accel_uring_cmd_setup_p2p(struct io_uring_cmd *ioucmd,
 				     struct accel_dev *dev,
 				     const struct accel_uring_cmd *ucmd)
 {
-	u16 peer_bdf = ucmd->setup_p2p.peer_bdf;
+	struct accel_p2p_ring_setup params = {
+		.peer_bdf = ucmd->setup_p2p.peer_bdf,
+		.slot = ucmd->setup_p2p.slot,
+		.peer_slot = ucmd->setup_p2p.peer_slot,
+		.peer_bar0 = ucmd->setup_p2p.peer_bar0,
+	};
 	int ret;
 
 	mutex_lock(&dev->dev_mutex);
-	ret = accel_setup_p2p_peer(dev, peer_bdf);
+	ret = accel_setup_p2p_peer(dev, &params);
 	mutex_unlock(&dev->dev_mutex);
 
 	return ret;
@@ -380,21 +385,6 @@ int accel_uring_cmd(struct io_uring_cmd *ioucmd, unsigned int issue_flags)
 						      issue_flags);
 		}
 
-	case ACCEL_URING_CMD_P2P_RING_SETUP:
-		/*
-		 * P2P ring setup via uring: extract params from cmd fields
-		 * and delegate to the admin command path (qid=0).
-		 */
-		{
-			struct accel_uring_cmd admin_ucmd = *ucmd;
-			admin_ucmd.op = ACCEL_URING_CMD_SUBMIT;
-			admin_ucmd.qid = 0;
-			admin_ucmd.submit.cmd.opcode =
-				ACCEL_ADM_CMD_P2P_RING_SETUP;
-			return accel_uring_cmd_submit(ioucmd, dev, &admin_ucmd,
-						      issue_flags);
-		}
-
 	default:
 		return -EINVAL;
 	}
@@ -418,9 +408,7 @@ static long accel_ioctl_create_queue(struct accel_dev *dev, unsigned long arg)
 		return -EFAULT;
 
 	mutex_lock(&dev->dev_mutex);
-	ret = accel_create_queue(dev, qc.qid,
-				 qc.create_queue.sq_size,
-				 qc.create_queue.cq_size);
+	ret = accel_create_queue(dev, qc.qid);
 	mutex_unlock(&dev->dev_mutex);
 
 	return ret;
@@ -546,13 +534,19 @@ out_free:
 static long accel_ioctl_setup_p2p(struct accel_dev *dev, unsigned long arg)
 {
 	struct accel_uring_cmd ucmd;
+	struct accel_p2p_ring_setup params;
 	int ret;
 
 	if (copy_from_user(&ucmd, (void __user *)arg, sizeof(ucmd)))
 		return -EFAULT;
 
+	params.peer_bdf = ucmd.setup_p2p.peer_bdf;
+	params.slot = ucmd.setup_p2p.slot;
+	params.peer_slot = ucmd.setup_p2p.peer_slot;
+	params.peer_bar0 = ucmd.setup_p2p.peer_bar0;
+
 	mutex_lock(&dev->dev_mutex);
-	ret = accel_setup_p2p_peer(dev, ucmd.setup_p2p.peer_bdf);
+	ret = accel_setup_p2p_peer(dev, &params);
 	mutex_unlock(&dev->dev_mutex);
 
 	return ret;
@@ -614,7 +608,7 @@ static long accel_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		struct accel_p2p_ring_setup params;
 		if (copy_from_user(&params, (void __user *)arg, sizeof(params)))
 			return -EFAULT;
-		return accel_p2p_ring_setup(dev, &params);
+		return accel_setup_p2p_peer(dev, &params);
 	}
 
 	default:

@@ -620,7 +620,7 @@ irqreturn_t accel_irq_handler_threaded(int irq, void *data)
  *
  * Returns: 0 on success, -ENOSPC if queue is full
  */
-static int accel_submit_cmd(struct accel_queue *queue, struct accel_cmd *cmd)
+static int accel_submit_cmd(struct accel_queue *queue, union accel_cmd *cmd)
 {
 	u32 next_tail;
 	void *sqe;
@@ -663,7 +663,7 @@ static int accel_submit_cmd(struct accel_queue *queue, struct accel_cmd *cmd)
  *
  * Returns: 0 on success, negative error on failure
  */
-int accel_submit_async_cmd(struct accel_queue *queue, struct accel_cmd *cmd,
+int accel_submit_async_cmd(struct accel_queue *queue, union accel_cmd *cmd,
 			   struct io_uring_cmd *ioucmd, void *data_buf,
 			   dma_addr_t data_dma, size_t data_len,
 			   void __user *user_buf)
@@ -843,7 +843,7 @@ static int accel_wait_for_completion(struct accel_queue *queue, u16 cid,
  *
  * Returns: 0 on success, negative error code on failure
  */
-int accel_submit_admin_cmd(struct accel_dev *dev, struct accel_cmd *cmd,
+int accel_submit_admin_cmd(struct accel_dev *dev, union accel_cmd *cmd,
 			   struct accel_cqe *cqe)
 {
 	struct accel_queue *queue = dev->queues[0];
@@ -897,7 +897,7 @@ int accel_submit_admin_cmd(struct accel_dev *dev, struct accel_cmd *cmd,
  * Returns: 0 on success, negative error code on failure
  */
 int accel_submit_sync_cmd(struct accel_dev *dev, u16 qid,
-			  struct accel_cmd *cmd, struct accel_cqe *cqe,
+			  union accel_cmd *cmd, struct accel_cqe *cqe,
 			  u32 timeout_ms)
 {
 	struct accel_queue *queue;
@@ -986,31 +986,26 @@ static int accel_init_request_pool(struct accel_queue *queue)
  * accel_create_queue - Create an I/O queue pair
  * @dev: Device structure
  * @qid: Queue ID (1 to max_queues)
- * @sq_size: Submission queue size
- * @cq_size: Completion queue size
  *
- * Allocates DMA memory and sends admin commands to create the queue pair.
+ * Allocates DMA memory and sends a single CREATE_IOQ admin command to create
+ * both the CQ and SQ as a pair. Queue depth is read from the CAP register's
+ * DEPTH field.
  *
- * Create CQ Admin Command (opcode 0x05):
- *   CDW10[15:0]: CQID - Completion Queue Identifier
- *   CDW10[31:16]: QSIZE - Queue Size (0-based)
- *   CDW11[15:0]: IV - Interrupt Vector
- *   CDW11[16]: IEN - Interrupts Enabled
- *   PRP1: CQ base address (page-aligned)
- *
- * Create SQ Admin Command (opcode 0x01):
- *   CDW10[15:0]: SQID - Submission Queue Identifier
- *   CDW10[31:16]: QSIZE - Queue Size (0-based)
- *   CDW11[15:0]: CQID - Associated Completion Queue ID
- *   PRP1: SQ base address (page-aligned)
+ * Create IO Queue Admin Command (opcode 0x0D):
+ *   qid: Queue pair identifier
+ *   irq_vector: MSI-X interrupt vector
+ *   sq_base: SQ DMA base address (page-aligned)
+ *   cq_base: CQ DMA base address (page-aligned)
  *
  * Returns: 0 on success, negative error code on failure
  */
-int accel_create_queue(struct accel_dev *dev, u16 qid, u16 sq_size, u16 cq_size)
+int accel_create_queue(struct accel_dev *dev, u16 qid)
 {
 	struct accel_queue *queue;
-	struct accel_cmd cmd;
+	union accel_cmd cmd;
 	struct accel_cqe cqe;
+	u64 cap;
+	u32 depth_val, qsize;
 	int ret;
 
 	if (qid == 0 || qid >= ACCEL_MAX_QUEUES)
@@ -1019,11 +1014,10 @@ int accel_create_queue(struct accel_dev *dev, u16 qid, u16 sq_size, u16 cq_size)
 	if (dev->queues[qid])
 		return -EEXIST;
 
-	/* Clamp queue sizes to valid range */
-	if (sq_size < 2 || sq_size > MAX_IO_QUEUE_SIZE)
-		sq_size = DEFAULT_IO_QUEUE_SIZE;
-	if (cq_size < 2 || cq_size > MAX_IO_QUEUE_SIZE)
-		cq_size = DEFAULT_IO_QUEUE_SIZE;
+	/* Read queue depth from CAP register */
+	cap = accel_reg_read64(dev, ACCEL_REG_CAP);
+	depth_val = (cap >> 16) & 0xF;
+	qsize = 1 << depth_val;
 
 	queue = kzalloc(sizeof(*queue), GFP_KERNEL);
 	if (!queue)
@@ -1031,8 +1025,8 @@ int accel_create_queue(struct accel_dev *dev, u16 qid, u16 sq_size, u16 cq_size)
 
 	queue->dev = dev;
 	queue->qid = qid;
-	queue->sq_size = sq_size;
-	queue->cq_size = cq_size;
+	queue->sq_size = qsize;
+	queue->cq_size = qsize;
 	queue->cq_phase = 1;  /* Initial phase bit */
 
 	spin_lock_init(&queue->sq_lock);
@@ -1047,7 +1041,7 @@ int accel_create_queue(struct accel_dev *dev, u16 qid, u16 sq_size, u16 cq_size)
 
 	/* Allocate SQ buffer (page-aligned for DMA) */
 	queue->sq_buffer = dma_alloc_coherent(&dev->pdev->dev,
-					      sq_size * ACCEL_SQE_SIZE,
+					      qsize * ACCEL_SQE_SIZE,
 					      &queue->sq_dma_addr,
 					      GFP_KERNEL);
 	if (!queue->sq_buffer) {
@@ -1057,7 +1051,7 @@ int accel_create_queue(struct accel_dev *dev, u16 qid, u16 sq_size, u16 cq_size)
 
 	/* Allocate CQ buffer (page-aligned for DMA) */
 	queue->cq_buffer = dma_alloc_coherent(&dev->pdev->dev,
-					      cq_size * ACCEL_CQE_SIZE,
+					      qsize * ACCEL_CQE_SIZE,
 					      &queue->cq_dma_addr,
 					      GFP_KERNEL);
 	if (!queue->cq_buffer) {
@@ -1066,60 +1060,36 @@ int accel_create_queue(struct accel_dev *dev, u16 qid, u16 sq_size, u16 cq_size)
 	}
 
 	/* Clear queue buffers for proper phase bit detection */
-	memset(queue->sq_buffer, 0, sq_size * ACCEL_SQE_SIZE);
-	memset(queue->cq_buffer, 0, cq_size * ACCEL_CQE_SIZE);
+	memset(queue->sq_buffer, 0, qsize * ACCEL_SQE_SIZE);
+	memset(queue->cq_buffer, 0, qsize * ACCEL_CQE_SIZE);
 
 	/*
-	 * Create Completion Queue via admin command.
+	 * Create IO Queue pair via single admin command.
 	 */
 	memset(&cmd, 0, sizeof(cmd));
-	cmd.opcode = ACCEL_ADM_CMD_CREATE_CQ;
-	cmd.dbd.prpl.prp1 = cpu_to_le64(queue->cq_dma_addr);
-	cmd.dw.admin.cdw10 = cpu_to_le32(qid | ((cq_size - 1) << 16));
+	cmd.create_ioq.opcode = ACCEL_ADM_CMD_CREATE_IOQ;
+	cmd.create_ioq.qid = cpu_to_le16(qid);
+	cmd.create_ioq.sq_base = cpu_to_le64(queue->sq_dma_addr);
+	cmd.create_ioq.cq_base = cpu_to_le64(queue->cq_dma_addr);
 
 	/* Assign interrupt vector if available */
 	if (qid < dev->num_vecs) {
 		queue->irq_vector = pci_irq_vector(dev->pdev, qid);
-		cmd.dw.admin.cdw11 = cpu_to_le32(qid | (1 << 16));  /* IEN=1 */
-	} else {
-		cmd.dw.admin.cdw11 = cpu_to_le32(0);  /* No interrupt */
+		cmd.create_ioq.irq_vector = cpu_to_le16(qid);
 	}
 
 	ret = accel_submit_admin_cmd(dev, &cmd, &cqe);
 	if (ret) {
-		dev_err(&dev->pdev->dev, "Failed to create CQ %u: %d\n", qid, ret);
+		dev_err(&dev->pdev->dev, "Failed to create IOQ %u: %d\n", qid, ret);
 		goto err_free_cq;
 	}
 
 	/* Check completion status code (bits [15:0]) */
 	if ((le32_to_cpu(cqe.status) & 0xFFFF) != 0) {
-		dev_err(&dev->pdev->dev, "Create CQ %u failed: status 0x%x\n",
+		dev_err(&dev->pdev->dev, "Create IOQ %u failed: status 0x%x\n",
 			qid, le32_to_cpu(cqe.status) & 0xFFFF);
 		ret = -EIO;
 		goto err_free_cq;
-	}
-
-	/*
-	 * Create Submission Queue via admin command.
-	 */
-	memset(&cmd, 0, sizeof(cmd));
-	cmd.opcode = ACCEL_ADM_CMD_CREATE_SQ;
-	cmd.dbd.prpl.prp1 = cpu_to_le64(queue->sq_dma_addr);
-	cmd.dw.admin.cdw10 = cpu_to_le32(qid | ((sq_size - 1) << 16));
-	cmd.dw.admin.cdw11 = cpu_to_le32(qid);  /* CQID = SQID */
-
-	ret = accel_submit_admin_cmd(dev, &cmd, &cqe);
-	if (ret) {
-		dev_err(&dev->pdev->dev, "Failed to create SQ %u: %d\n", qid, ret);
-		goto err_delete_cq;
-	}
-
-	/* Check completion status code (bits [15:0]) */
-	if ((le32_to_cpu(cqe.status) & 0xFFFF) != 0) {
-		dev_err(&dev->pdev->dev, "Create SQ %u failed: status 0x%x\n",
-			qid, le32_to_cpu(cqe.status) & 0xFFFF);
-		ret = -EIO;
-		goto err_delete_cq;
 	}
 
 	/* Request threaded interrupt handler for io_uring completion */
@@ -1149,24 +1119,16 @@ int accel_create_queue(struct accel_dev *dev, u16 qid, u16 sq_size, u16 cq_size)
 	dev->num_queues++;
 
 	dev_dbg(&dev->pdev->dev,
-		"Created queue %u: SQ@0x%llx CQ@0x%llx sizes %u/%u\n",
-		qid, queue->sq_dma_addr, queue->cq_dma_addr,
-		sq_size, cq_size);
+		"Created queue %u: SQ@0x%llx CQ@0x%llx size %u\n",
+		qid, queue->sq_dma_addr, queue->cq_dma_addr, qsize);
 
 	return 0;
 
-err_delete_cq:
-	/* Delete the CQ we created */
-	memset(&cmd, 0, sizeof(cmd));
-	cmd.opcode = ACCEL_ADM_CMD_DELETE_CQ;
-	cmd.dw.admin.cdw10 = cpu_to_le32(qid);
-	accel_submit_admin_cmd(dev, &cmd, NULL);
-
 err_free_cq:
-	dma_free_coherent(&dev->pdev->dev, cq_size * ACCEL_CQE_SIZE,
+	dma_free_coherent(&dev->pdev->dev, qsize * ACCEL_CQE_SIZE,
 			  queue->cq_buffer, queue->cq_dma_addr);
 err_free_sq:
-	dma_free_coherent(&dev->pdev->dev, sq_size * ACCEL_SQE_SIZE,
+	dma_free_coherent(&dev->pdev->dev, qsize * ACCEL_SQE_SIZE,
 			  queue->sq_buffer, queue->sq_dma_addr);
 err_free_queue:
 	kfree(queue);
@@ -1178,20 +1140,18 @@ err_free_queue:
  * @dev: Device structure
  * @qid: Queue ID to delete
  *
- * Sends admin commands to delete the queue pair and frees resources.
+ * Sends a single DELETE_IOQ admin command to delete the queue pair and
+ * frees resources.
  *
- * Delete SQ Admin Command (opcode 0x00):
- *   CDW10[15:0]: SQID - Submission Queue Identifier
- *
- * Delete CQ Admin Command (opcode 0x04):
- *   CDW10[15:0]: CQID - Completion Queue Identifier
+ * Delete IO Queue Admin Command (opcode 0x0E):
+ *   qid: Queue pair identifier to delete
  *
  * Returns: 0 on success, negative error code on failure
  */
 int accel_delete_queue(struct accel_dev *dev, u16 qid)
 {
 	struct accel_queue *queue;
-	struct accel_cmd cmd;
+	union accel_cmd cmd;
 	struct accel_request *req;
 	struct hlist_node *tmp;
 	unsigned long flags;
@@ -1231,21 +1191,13 @@ int accel_delete_queue(struct accel_dev *dev, u16 qid)
 	if (queue->irq_vector)
 		free_irq(queue->irq_vector, queue);
 
-	/* Delete Submission Queue via admin command */
+	/* Delete IO Queue pair via single admin command */
 	memset(&cmd, 0, sizeof(cmd));
-	cmd.opcode = ACCEL_ADM_CMD_DELETE_SQ;
-	cmd.dw.admin.cdw10 = cpu_to_le32(qid);
+	cmd.delete_ioq.opcode = ACCEL_ADM_CMD_DELETE_IOQ;
+	cmd.delete_ioq.qid = cpu_to_le16(qid);
 	ret = accel_submit_admin_cmd(dev, &cmd, NULL);
 	if (ret)
-		dev_warn(&dev->pdev->dev, "Delete SQ %u failed: %d\n", qid, ret);
-
-	/* Delete Completion Queue via admin command */
-	memset(&cmd, 0, sizeof(cmd));
-	cmd.opcode = ACCEL_ADM_CMD_DELETE_CQ;
-	cmd.dw.admin.cdw10 = cpu_to_le32(qid);
-	ret = accel_submit_admin_cmd(dev, &cmd, NULL);
-	if (ret)
-		dev_warn(&dev->pdev->dev, "Delete CQ %u failed: %d\n", qid, ret);
+		dev_warn(&dev->pdev->dev, "Delete IOQ %u failed: %d\n", qid, ret);
 
 	/* Free request pool */
 	kfree(queue->req_pool);
