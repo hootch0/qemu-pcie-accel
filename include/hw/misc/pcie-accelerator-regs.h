@@ -546,7 +546,7 @@
 /*
  * dev_mem_region.desc (64 bits):
  *   Bits [5:0]   - CID: Component ID
- *   Bits [7:6]   - TYPE: Memory type (0=MMIO, 1=MEM, 2=reserved, 3=reserved)
+ *   Bits [7:6]   - TYPE: Memory type (0=reserved, 1=MEM, 2=reserved, 3=reserved)
  *   Bits [15:8]  - PID: Partition ID (BAR number)
  *   Bits [63:16] - SIZE: Region size in bytes
  */
@@ -560,7 +560,6 @@
 #define ACCEL_MR_SIZE_MASK      0xFFFFFFFFFFFFULL
 
 /* Memory region types */
-#define ACCEL_MR_TYPE_MMIO      0       /* MMIO registers */
 #define ACCEL_MR_TYPE_MEM       1       /* Memory (RAM) */
 
 /* Build memory region descriptor */
