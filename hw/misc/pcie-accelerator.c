@@ -1573,7 +1573,7 @@ void pcie_accel_realize(PCIDevice *pci_dev, Error **errp)
 
     /* Initialize capability register */
     n->bar.cap = (1ULL << ACCEL_CAP_P2P_SHIFT) |          /* P2P MMIO queues */
-                 (1ULL << ACCEL_CAP_SVA_SHIFT) |           /* PASID/SVA */
+                 ((uint64_t)n->sva.enabled << ACCEL_CAP_SVA_SHIFT) | /* PASID/SVA */
                  (1ULL << ACCEL_CAP_PRPL_SHIFT) |          /* PRPL DMA */
                  (1ULL << ACCEL_CAP_SGL_SHIFT) |           /* SGL DMA */
                  (0x8ULL << ACCEL_CAP_P2P_CH_BS_SHIFT) |  /* 2^8 x 4KB P2P channel buf */
