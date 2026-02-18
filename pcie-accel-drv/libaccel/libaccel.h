@@ -122,13 +122,21 @@ extern "C" {
  */
 struct accel_cmd {
     uint8_t  opcode;          /* Command opcode */
-    uint8_t  flags;           /* Command flags */
+    uint8_t  flags;           /* [1:0]=DBD type, [2]=PASID, [3]=PRIV */
     uint16_t cid;             /* Command identifier */
-    uint32_t nsid;            /* Namespace/Peer ID */
-    uint64_t rsvd1;           /* Reserved (must match driver: 8 bytes) */
-    uint64_t metadata;        /* Metadata pointer */
-    uint64_t prp1;            /* Data buffer pointer */
-    uint64_t prp2;            /* Secondary pointer or PRP list */
+    uint32_t rsvd0;           /* Reserved (was nsid) */
+    uint32_t rsvd1;           /* Reserved */
+
+    /* Data Block Descriptor (CDW3-6, 16 bytes) */
+    union {
+        struct { uint64_t prp1; uint64_t prp2; } prpl;
+        struct { uint64_t addr; uint32_t length; uint32_t type; } sgl;
+        struct { uint64_t addr; uint64_t rsvd; } hva;
+    } dbd;
+
+    uint32_t data_xfer_size;  /* Data transfer size in bytes */
+    uint64_t rsvd2;           /* Reserved */
+
     union {
         struct {
             uint32_t length;      /* Transfer length */
@@ -160,12 +168,10 @@ struct accel_cmd {
  * Completion status returned by the device.
  */
 struct accel_cqe {
-    uint32_t result;          /* Command-specific result */
-    uint32_t rsvd;
     uint16_t sq_head;         /* SQ head at completion */
-    uint16_t sq_id;           /* Originating SQ ID */
     uint16_t cid;             /* Command ID */
-    uint16_t status;          /* Status with phase bit */
+    uint32_t status;          /* Status[0]=phase, Status[31:1]=code */
+    uint64_t result;          /* Command-specific result (64-bit) */
 } __attribute__((packed));
 
 /**

@@ -139,7 +139,7 @@ static int accel_uring_cmd_submit(struct io_uring_cmd *ioucmd,
 			cmd.opcode == ACCEL_CMD_P2P_WRITE ? "WRITE" : "READ",
 			qid, le32_to_cpu(cmd.dw.p2p.peer_bdf),
 			le64_to_cpu(cmd.dw.p2p.peer_addr),
-			le64_to_cpu(cmd.prp1), data_len);
+			le64_to_cpu(cmd.dbd.prpl.prp1), data_len);
 		break;
 	default:
 		/* No data buffer needed */
@@ -149,7 +149,7 @@ static int accel_uring_cmd_submit(struct io_uring_cmd *ioucmd,
 
 	/* Allocate DMA buffer if needed (limit to 16MB) */
 	if (data_len > 0 && data_len <= (16 * 1024 * 1024)) {
-		u64 user_addr = le64_to_cpu(cmd.prp1);
+		u64 user_addr = le64_to_cpu(cmd.dbd.prpl.prp1);
 
 		data_buf = dma_alloc_coherent(&dev->pdev->dev, data_len,
 					      &data_dma, GFP_ATOMIC);
@@ -187,7 +187,7 @@ static int accel_uring_cmd_submit(struct io_uring_cmd *ioucmd,
 		}
 
 		/* Replace user address with DMA address */
-		cmd.prp1 = cpu_to_le64(data_dma);
+		cmd.dbd.prpl.prp1 = cpu_to_le64(data_dma);
 
 		dev_dbg(&dev->pdev->dev,
 			"SUBMIT: DMA buf=%p dma_addr=0x%llx len=%zu user_buf=%p\n",
@@ -488,7 +488,7 @@ static long accel_ioctl_submit_cmd(struct accel_dev *dev, unsigned long arg)
 		/* Copy data for write operations */
 		if (ucmd.submit.cmd.opcode == ACCEL_CMD_P2P_WRITE ||
 		    ucmd.submit.cmd.opcode == ACCEL_CMD_LOOPBACK) {
-			u64 user_addr = le64_to_cpu(ucmd.submit.cmd.prp1);
+			u64 user_addr = le64_to_cpu(ucmd.submit.cmd.dbd.prpl.prp1);
 			if (copy_from_user(data_buf, (void __user *)user_addr,
 					   data_len)) {
 				ret = -EFAULT;
@@ -496,7 +496,7 @@ static long accel_ioctl_submit_cmd(struct accel_dev *dev, unsigned long arg)
 			}
 		}
 
-		ucmd.submit.cmd.prp1 = cpu_to_le64(data_dma);
+		ucmd.submit.cmd.dbd.prpl.prp1 = cpu_to_le64(data_dma);
 	}
 
 	/* Submit synchronously */
@@ -516,7 +516,7 @@ static long accel_ioctl_submit_cmd(struct accel_dev *dev, unsigned long arg)
 			ret = -EFAULT;
 			goto out_free;
 		}
-		u64 user_addr = le64_to_cpu(orig.submit.cmd.prp1);
+		u64 user_addr = le64_to_cpu(orig.submit.cmd.dbd.prpl.prp1);
 		uptr = (void __user *)user_addr;
 
 		/* Validate user address before copying */

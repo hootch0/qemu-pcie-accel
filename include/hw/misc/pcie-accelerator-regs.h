@@ -372,10 +372,23 @@
 /* ===== Command Flags ===== */
 /*
  * Flags for command submission (cmd.flags field).
+ *
+ * Bits [1:0] - DBD_TYPE: Data Block Descriptor type
+ *   00 = PRPL (Physical Region Page List)
+ *   01 = SGL  (Scatter-Gather List)
+ *   10 = HVA  (Host Virtual Address)
+ *   11 = Reserved
+ *
+ * Bit [2] - PASID_EN: Enable PASID for this command
+ * Bit [3] - PRIV: Privileged operation
+ * Bits [7:4] - Reserved
  */
-#define ACCEL_CMD_FLAG_PASID_ENABLE     (1 << 0)  /* Enable PASID for this command */
-#define ACCEL_CMD_FLAG_PRIV             (1 << 1)  /* Privileged operation */
-#define ACCEL_CMD_FLAG_EXEC             (1 << 2)  /* Execute permission required */
+#define ACCEL_CMD_FLAGS_DBD_MASK        0x03
+#define ACCEL_CMD_FLAGS_DBD_PRPL        0x00  /* PRP List */
+#define ACCEL_CMD_FLAGS_DBD_SGL         0x01  /* Scatter-Gather List */
+#define ACCEL_CMD_FLAGS_DBD_HVA         0x02  /* Host Virtual Address */
+#define ACCEL_CMD_FLAGS_PASID_EN        0x04  /* PASID enable */
+#define ACCEL_CMD_FLAGS_PRIV            0x08  /* Privileged operation */
 
 /* ===== Completion Status Codes ===== */
 /*

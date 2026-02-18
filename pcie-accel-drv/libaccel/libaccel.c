@@ -487,7 +487,7 @@ int accel_loopback(struct accel_device *dev, uint16_t qid,
         return ACCEL_ERR_INVAL;
 
     cmd.opcode = ACCEL_CMD_LOOPBACK;
-    cmd.prp1 = (uint64_t)(uintptr_t)data;
+    cmd.dbd.prpl.prp1 = (uint64_t)(uintptr_t)data;
     cmd.dw.loopback.length = length;
     cmd.dw.loopback.pattern = pattern;
 
@@ -507,7 +507,7 @@ int accel_p2p_write(struct accel_device *dev, uint16_t qid,
         return ACCEL_ERR_INVAL;
 
     cmd.opcode = ACCEL_CMD_P2P_WRITE;
-    cmd.prp1 = (uint64_t)(uintptr_t)local_data;
+    cmd.dbd.prpl.prp1 = (uint64_t)(uintptr_t)local_data;
     cmd.dw.p2p.length = length;
     cmd.dw.p2p.peer_addr = peer_addr;
     cmd.dw.p2p.peer_bdf = peer_bdf;
@@ -528,7 +528,7 @@ int accel_p2p_read(struct accel_device *dev, uint16_t qid,
         return ACCEL_ERR_INVAL;
 
     cmd.opcode = ACCEL_CMD_P2P_READ;
-    cmd.prp1 = (uint64_t)(uintptr_t)local_data;
+    cmd.dbd.prpl.prp1 = (uint64_t)(uintptr_t)local_data;
     cmd.dw.p2p.length = length;
     cmd.dw.p2p.peer_addr = peer_addr;
     cmd.dw.p2p.peer_bdf = peer_bdf;
@@ -594,7 +594,7 @@ int accel_async_loopback(struct accel_device *dev, uint16_t qid,
         return ACCEL_ERR_INVAL;
 
     cmd.opcode = ACCEL_CMD_LOOPBACK;
-    cmd.prp1 = (uint64_t)(uintptr_t)data;
+    cmd.dbd.prpl.prp1 = (uint64_t)(uintptr_t)data;
     cmd.dw.loopback.length = length;
     cmd.dw.loopback.pattern = pattern;
 
@@ -618,7 +618,7 @@ int accel_async_p2p_write(struct accel_device *dev, uint16_t qid,
         return ACCEL_ERR_INVAL;
 
     cmd.opcode = ACCEL_CMD_P2P_WRITE;
-    cmd.prp1 = (uint64_t)(uintptr_t)local_data;
+    cmd.dbd.prpl.prp1 = (uint64_t)(uintptr_t)local_data;
     cmd.dw.p2p.length = length;
     cmd.dw.p2p.peer_addr = peer_addr;
     cmd.dw.p2p.peer_bdf = peer_bdf;
@@ -643,7 +643,7 @@ int accel_async_p2p_read(struct accel_device *dev, uint16_t qid,
         return ACCEL_ERR_INVAL;
 
     cmd.opcode = ACCEL_CMD_P2P_READ;
-    cmd.prp1 = (uint64_t)(uintptr_t)local_data;
+    cmd.dbd.prpl.prp1 = (uint64_t)(uintptr_t)local_data;
     cmd.dw.p2p.length = length;
     cmd.dw.p2p.peer_addr = peer_addr;
     cmd.dw.p2p.peer_bdf = peer_bdf;

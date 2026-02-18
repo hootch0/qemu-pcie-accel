@@ -363,12 +363,10 @@ static void accel_request_timeout(struct timer_list *t)
  * ===== Completion Processing =====
  *
  * Completion Queue Entry (CQE) Format (16 bytes):
- *   Offset 0x00: result (4 bytes) - Command-specific result
- *   Offset 0x04: reserved (4 bytes)
- *   Offset 0x08: sq_head (2 bytes) - SQ head at completion time
- *   Offset 0x0A: sq_id (2 bytes) - Originating SQ ID
- *   Offset 0x0C: cid (2 bytes) - Command ID
- *   Offset 0x0E: status (2 bytes) - Status with phase bit in bit 0
+ *   Offset 0x00: sq_head (2 bytes) - SQ head at completion time
+ *   Offset 0x02: cid (2 bytes) - Command ID
+ *   Offset 0x04: status (4 bytes) - Status[0]=phase, Status[31:1]=code
+ *   Offset 0x08: result (8 bytes) - Command-specific result (64-bit)
  *
  * Phase Bit Protocol:
  * The phase bit (bit 0 of status) alternates between 0 and 1 each time
@@ -390,7 +388,7 @@ static inline bool accel_cqe_valid(struct accel_cqe *cqe, u8 phase)
 	 * The device sets the phase bit to match our expected value
 	 * when writing a new completion.
 	 */
-	return (le16_to_cpu(cqe->status) & 0x1) == phase;
+	return (le32_to_cpu(cqe->status) & 0x1) == phase;
 }
 
 /**
@@ -432,8 +430,8 @@ static int accel_process_cq_threaded(struct accel_queue *queue)
 	unsigned long flags;
 	int processed = 0;
 	u16 cid;
-	s32 result;
-	u16 status;
+	s64 result;
+	u32 status;
 
 	spin_lock_irqsave(&queue->cq_lock, flags);
 
@@ -452,17 +450,17 @@ static int accel_process_cq_threaded(struct accel_queue *queue)
 
 		/* Extract completion data */
 		cid = le16_to_cpu(cqe->cid);
-		result = le32_to_cpu(cqe->result);
-		status = le16_to_cpu(cqe->status) >> 1;  /* Remove phase bit */
+		result = le64_to_cpu(cqe->result);
+		status = le32_to_cpu(cqe->status) >> 1;  /* Remove phase bit */
 
 		/* Update SQ head from completion */
 		queue->sq_head = le16_to_cpu(cqe->sq_head);
 
 		dev_dbg(&dev->pdev->dev,
-			"CQ[%u] CQE: cid=%u status=0x%x result=0x%x sq_head=%u "
+			"CQ[%u] CQE: cid=%u status=0x%x result=0x%llx sq_head=%u "
 			"cq_head=%u phase=%u\n",
-			queue->qid, cid, status, result, queue->sq_head,
-			queue->cq_head, queue->cq_phase);
+			queue->qid, cid, status, (unsigned long long)result,
+			queue->sq_head, queue->cq_head, queue->cq_phase);
 
 		/* Find the request by CID */
 		req = accel_find_request(queue, cid);
@@ -789,7 +787,7 @@ static int accel_wait_for_completion(struct accel_queue *queue, u16 cid,
 	struct accel_cqe *q_cqe;
 	unsigned long deadline = jiffies + msecs_to_jiffies(timeout_ms);
 	unsigned long flags;
-	u16 status;
+	u32 status;
 
 	while (time_before(jiffies, deadline)) {
 		spin_lock_irqsave(&queue->cq_lock, flags);
@@ -807,7 +805,7 @@ static int accel_wait_for_completion(struct accel_queue *queue, u16 cid,
 					memcpy(cqe, q_cqe, sizeof(*cqe));
 
 				/* Extract status (remove phase bit) */
-				status = le16_to_cpu(q_cqe->status) >> 1;
+				status = le32_to_cpu(q_cqe->status) >> 1;
 
 				/* Advance CQ head */
 				queue->cq_head++;
@@ -1076,7 +1074,7 @@ int accel_create_queue(struct accel_dev *dev, u16 qid, u16 sq_size, u16 cq_size)
 	 */
 	memset(&cmd, 0, sizeof(cmd));
 	cmd.opcode = ACCEL_ADM_CMD_CREATE_CQ;
-	cmd.prp1 = cpu_to_le64(queue->cq_dma_addr);
+	cmd.dbd.prpl.prp1 = cpu_to_le64(queue->cq_dma_addr);
 	cmd.dw.admin.cdw10 = cpu_to_le32(qid | ((cq_size - 1) << 16));
 
 	/* Assign interrupt vector if available */
@@ -1093,10 +1091,10 @@ int accel_create_queue(struct accel_dev *dev, u16 qid, u16 sq_size, u16 cq_size)
 		goto err_free_cq;
 	}
 
-	/* Check completion status (status is in bits [15:1]) */
-	if ((le16_to_cpu(cqe.status) >> 1) != 0) {
+	/* Check completion status (status is in bits [31:1]) */
+	if ((le32_to_cpu(cqe.status) >> 1) != 0) {
 		dev_err(&dev->pdev->dev, "Create CQ %u failed: status 0x%x\n",
-			qid, le16_to_cpu(cqe.status) >> 1);
+			qid, le32_to_cpu(cqe.status) >> 1);
 		ret = -EIO;
 		goto err_free_cq;
 	}
@@ -1106,7 +1104,7 @@ int accel_create_queue(struct accel_dev *dev, u16 qid, u16 sq_size, u16 cq_size)
 	 */
 	memset(&cmd, 0, sizeof(cmd));
 	cmd.opcode = ACCEL_ADM_CMD_CREATE_SQ;
-	cmd.prp1 = cpu_to_le64(queue->sq_dma_addr);
+	cmd.dbd.prpl.prp1 = cpu_to_le64(queue->sq_dma_addr);
 	cmd.dw.admin.cdw10 = cpu_to_le32(qid | ((sq_size - 1) << 16));
 	cmd.dw.admin.cdw11 = cpu_to_le32(qid);  /* CQID = SQID */
 
@@ -1117,9 +1115,9 @@ int accel_create_queue(struct accel_dev *dev, u16 qid, u16 sq_size, u16 cq_size)
 	}
 
 	/* Check completion status */
-	if ((le16_to_cpu(cqe.status) >> 1) != 0) {
+	if ((le32_to_cpu(cqe.status) >> 1) != 0) {
 		dev_err(&dev->pdev->dev, "Create SQ %u failed: status 0x%x\n",
-			qid, le16_to_cpu(cqe.status) >> 1);
+			qid, le32_to_cpu(cqe.status) >> 1);
 		ret = -EIO;
 		goto err_delete_cq;
 	}

@@ -126,13 +126,17 @@ struct accel_request;
  */
 struct accel_cmd {
 	__u8	opcode;
-	__u8	flags;
+	__u8	flags;		/* [1:0]=DBD type, [2]=PASID, [3]=PRIV */
 	__le16	cid;
-	__le32	nsid;
-	__le64	rsvd1;
-	__le64	metadata;
-	__le64	prp1;
-	__le64	prp2;
+	__le32	rsvd0;		/* Reserved (was nsid) */
+	__le32	rsvd1;		/* Reserved */
+	union {
+		struct { __le64 prp1; __le64 prp2; } prpl;
+		struct { __le64 addr; __le32 length; __le32 type; } sgl;
+		struct { __le64 addr; __le64 rsvd; } hva;
+	} dbd;
+	__le32	data_xfer_size;
+	__le64	rsvd2;
 	union {
 		struct {
 			__le32	length;
@@ -162,12 +166,10 @@ struct accel_cmd {
  * struct accel_cqe - Completion queue entry (16 bytes)
  */
 struct accel_cqe {
-	__le32	result;
-	__le32	rsvd;
 	__le16	sq_head;
-	__le16	sq_id;
 	__le16	cid;
-	__le16	status;
+	__le32	status;		/* [0]=phase, [31:1]=status code */
+	__le64	result;
 } __packed;
 
 /**

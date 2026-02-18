@@ -229,7 +229,7 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
     PCIDevice *pci = PCI_DEVICE(n);
     uint16_t peer_bdf = le32_to_cpu(cmd->dw.p2p.peer_bdf);
     uint64_t peer_addr = le64_to_cpu(cmd->dw.p2p.peer_addr);
-    uint64_t host_addr = le64_to_cpu(cmd->prp1);
+    uint64_t host_addr = le64_to_cpu(cmd->dbd.prpl.prp1);
     uint32_t total_len = le32_to_cpu(cmd->dw.p2p.length);
     AccelP2PPeer *peer;
     uint32_t offset = 0;
@@ -364,7 +364,7 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
     if (status == ACCEL_SC_SUCCESS) {
         n->stats.p2p_xfers++;
         n->stats.p2p_bytes += total_len;
-        req->cqe.result = cpu_to_le32(total_len);
+        req->cqe.result = cpu_to_le64(total_len);
         qemu_log_mask(LOG_GUEST_ERROR,
                       "pcie-accel: P2P %s DONE: peer=0x%x len=%u status=0x%x "
                       "total_xfers=%" PRIu64 "\n",

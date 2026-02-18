@@ -42,21 +42,25 @@ OBJECT_DECLARE_SIMPLE_TYPE(PCIeAccel, PCIE_ACCEL)
 typedef struct QEMU_PACKED AccelCmd {
     /* CDW0 */
     uint8_t  opcode;          /* Command opcode (see ACCEL_CMD_* in regs.h) */
-    uint8_t  flags;           /* Command flags (PASID enable, privilege, etc.) */
+    uint8_t  flags;           /* [1:0]=DBD type, [2]=PASID, [3]=PRIV */
     uint16_t cid;             /* Command identifier (unique within SQ) */
 
-    /* CDW1 */
-    uint32_t nsid;            /* Namespace/Peer ID (for P2P commands) */
+    /* CDW1-2: Reserved */
+    uint32_t rsvd0;           /* Reserved (was nsid) */
+    uint32_t rsvd1;           /* Reserved */
 
-    /* CDW2-3: Reserved */
-    uint64_t rsvd1;
+    /* CDW3-6: Data Block Descriptor (16 bytes) */
+    union {
+        struct { uint64_t prp1; uint64_t prp2; } prpl;
+        struct { uint64_t addr; uint32_t length; uint32_t type; } sgl;
+        struct { uint64_t addr; uint64_t rsvd; } hva;
+    } dbd;
 
-    /* CDW4-5: Metadata pointer (currently unused) */
-    uint64_t metadata;
+    /* CDW7: Data transfer size */
+    uint32_t data_xfer_size;
 
-    /* CDW6-9: Data pointers */
-    uint64_t prp1;            /* Physical Region Page 1 (source buffer address) */
-    uint64_t prp2;            /* Physical Region Page 2 (dest buffer or PRP list) */
+    /* CDW8-9: Reserved */
+    uint64_t rsvd2;
 
     /* CDW10-15: Command-specific parameters */
     union {
@@ -98,12 +102,10 @@ QEMU_BUILD_BUG_ON(sizeof(AccelCmd) != 64);
  * The phase bit toggles each time the CQ wraps to the beginning.
  */
 typedef struct QEMU_PACKED AccelCqe {
-    uint32_t result;          /* Command-specific result value */
-    uint32_t rsvd;            /* Reserved */
     uint16_t sq_head;         /* SQ head pointer at completion time */
-    uint16_t sq_id;           /* SQ identifier */
     uint16_t cid;             /* Command identifier from submission */
-    uint16_t status;          /* Status[15:1] = status code, Status[0] = phase bit */
+    uint32_t status;          /* Status[0] = phase bit, Status[31:1] = status code */
+    uint64_t result;          /* Command-specific result (64-bit) */
 } AccelCqe;
 
 QEMU_BUILD_BUG_ON(sizeof(AccelCqe) != 16);
@@ -111,15 +113,15 @@ QEMU_BUILD_BUG_ON(sizeof(AccelCqe) != 16);
 /*
  * Helper macros for CQE status field manipulation
  */
-#define ACCEL_CQE_STATUS_PHASE_MASK 0x0001
+#define ACCEL_CQE_STATUS_PHASE_MASK 0x00000001
 #define ACCEL_CQE_STATUS_CODE_SHIFT 1
-#define ACCEL_CQE_STATUS_CODE_MASK  0xFFFE
-#define ACCEL_CQE_DNR_SHIFT         15
+#define ACCEL_CQE_STATUS_CODE_MASK  0xFFFFFFFE
+#define ACCEL_CQE_DNR_SHIFT         31
 
-/* Extract status code from CQE status field */
-#define ACCEL_CQE_STATUS_CODE(status) (((status) >> ACCEL_CQE_STATUS_CODE_SHIFT) & 0x7FFF)
+/* Extract status code from CQE status field (32-bit) */
+#define ACCEL_CQE_STATUS_CODE(status) (((status) >> ACCEL_CQE_STATUS_CODE_SHIFT) & 0x7FFFFFFF)
 
-/* Build CQE status field from code and phase */
+/* Build CQE status field from code and phase (32-bit) */
 #define ACCEL_CQE_BUILD_STATUS(code, phase) \
     ((((code) << ACCEL_CQE_STATUS_CODE_SHIFT) & ACCEL_CQE_STATUS_CODE_MASK) | \
      ((phase) & ACCEL_CQE_STATUS_PHASE_MASK))

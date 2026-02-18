@@ -288,11 +288,10 @@ void accel_post_cqes(void *opaque)
         }
 
         /* Build completion entry */
-        req->cqe.sq_id = cpu_to_le16(sq->sqid);
         req->cqe.sq_head = cpu_to_le16(sq->head);
 
-        /* Set status with phase bit */
-        req->cqe.status = cpu_to_le16(ACCEL_CQE_BUILD_STATUS(req->status,
+        /* Set status with phase bit (32-bit) */
+        req->cqe.status = cpu_to_le32(ACCEL_CQE_BUILD_STATUS(req->status,
                                                                cq->phase));
 
         /* Write CQE to host memory */
@@ -312,13 +311,12 @@ void accel_post_cqes(void *opaque)
 
         /* Trace: dump posted CQE */
         qemu_log("pcie-accel: CQ[%u] POST @ 0x%" PRIx64 " tail=%u phase=%u\n"
-                 "  result=0x%08x sq_head=%u sq_id=%u cid=%u status=0x%04x\n",
+                 "  sq_head=%u cid=%u status=0x%08x result=0x%016" PRIx64 "\n",
                  cq->cqid, addr, cq->tail, cq->phase,
-                 le32_to_cpu(req->cqe.result),
                  le16_to_cpu(req->cqe.sq_head),
-                 le16_to_cpu(req->cqe.sq_id),
                  le16_to_cpu(req->cqe.cid),
-                 le16_to_cpu(req->cqe.status));
+                 le32_to_cpu(req->cqe.status),
+                 le64_to_cpu(req->cqe.result));
 
         /* Remove from completion list */
         QTAILQ_REMOVE(&cq->req_list, req, entry);
@@ -391,7 +389,7 @@ static uint16_t accel_validate_cmd(PCIeAccel *n, AccelCmd *cmd)
     case ACCEL_CMD_LOOPBACK:
     case ACCEL_CMD_P2P_WRITE:
     case ACCEL_CMD_P2P_READ:
-        if (cmd->prp1 == 0) {
+        if (cmd->dbd.prpl.prp1 == 0) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "pcie-accel: NULL PRP1 for opcode 0x%x\n",
                           cmd->opcode);
@@ -423,7 +421,7 @@ static uint16_t accel_validate_cmd(PCIeAccel *n, AccelCmd *cmd)
     }
 
     /* Validate PASID if enabled */
-    if (cmd->flags & ACCEL_CMD_FLAG_PASID_ENABLE) {
+    if (cmd->flags & ACCEL_CMD_FLAGS_PASID_EN) {
         if (!n->sva.enabled) {
             return ACCEL_SC_PASID_NOT_ENABLED;
         }
@@ -458,7 +456,7 @@ uint16_t accel_cmd_loopback(PCIeAccel *n, AccelRequest *req)
 {
     AccelCmd *cmd = &req->cmd;
     uint32_t length = le32_to_cpu(cmd->dw.loopback.length);
-    uint64_t prp1 = le64_to_cpu(cmd->prp1);
+    uint64_t prp1 = le64_to_cpu(cmd->dbd.prpl.prp1);
     uint16_t status;
     void *buf;
 
@@ -505,7 +503,7 @@ uint16_t accel_cmd_loopback(PCIeAccel *n, AccelRequest *req)
     g_free(buf);
 
     if (status == ACCEL_SC_SUCCESS) {
-        req->cqe.result = cpu_to_le32(length);
+        req->cqe.result = cpu_to_le64(length);
         qemu_log_mask(LOG_UNIMP,
                       "pcie-accel: LOOPBACK completed successfully, len=%u\n",
                       length);
@@ -573,7 +571,7 @@ uint16_t accel_io_cmd(PCIeAccel *n, AccelRequest *req)
 uint16_t accel_cmd_identify(PCIeAccel *n, AccelRequest *req)
 {
     AccelCmd *cmd = &req->cmd;
-    uint64_t prp1 = le64_to_cpu(cmd->prp1);
+    uint64_t prp1 = le64_to_cpu(cmd->dbd.prpl.prp1);
     uint16_t status;
     uint8_t buf[4096] = {0};
 
@@ -621,7 +619,7 @@ uint16_t accel_cmd_create_cq(PCIeAccel *n, AccelRequest *req)
     uint16_t qsize = (le32_to_cpu(cmd->dw.admin.cdw10) >> 16) & 0xFFFF;
     uint16_t vector = le32_to_cpu(cmd->dw.admin.cdw11) & 0xFFFF;
     uint16_t irq_en = (le32_to_cpu(cmd->dw.admin.cdw11) >> 16) & 0x1;
-    uint64_t prp1 = le64_to_cpu(cmd->prp1);
+    uint64_t prp1 = le64_to_cpu(cmd->dbd.prpl.prp1);
     AccelCQueue *cq;
 
     qemu_log_mask(LOG_UNIMP,
@@ -687,7 +685,7 @@ uint16_t accel_cmd_create_sq(PCIeAccel *n, AccelRequest *req)
     uint16_t sqid = le32_to_cpu(cmd->dw.admin.cdw10) & 0xFFFF;
     uint16_t qsize = (le32_to_cpu(cmd->dw.admin.cdw10) >> 16) & 0xFFFF;
     uint16_t cqid = le32_to_cpu(cmd->dw.admin.cdw11) & 0xFFFF;
-    uint64_t prp1 = le64_to_cpu(cmd->prp1);
+    uint64_t prp1 = le64_to_cpu(cmd->dbd.prpl.prp1);
     AccelSQueue *sq;
 
     qemu_log_mask(LOG_UNIMP,
@@ -900,14 +898,18 @@ void accel_process_sq(void *opaque)
 
         /* Trace: dump fetched SQE */
         qemu_log("pcie-accel: SQ[%u] FETCH @ 0x%" PRIx64 " head=%u\n"
-                 "  opcode=0x%02x flags=0x%02x cid=%u nsid=%u\n"
-                 "  prp1=0x%016" PRIx64 " prp2=0x%016" PRIx64 "\n"
+                 "  opcode=0x%02x flags=0x%02x cid=%u\n"
+                 "  dbd.prpl.prp1=0x%016" PRIx64
+                 " dbd.prpl.prp2=0x%016" PRIx64 "\n"
+                 "  data_xfer_size=%u\n"
                  "  cdw10=0x%08x cdw11=0x%08x cdw12=0x%08x\n"
                  "  cdw13=0x%08x cdw14=0x%08x cdw15=0x%08x\n",
                  sq->sqid, addr, sq->head,
                  cmd.opcode, cmd.flags,
-                 le16_to_cpu(cmd.cid), le32_to_cpu(cmd.nsid),
-                 le64_to_cpu(cmd.prp1), le64_to_cpu(cmd.prp2),
+                 le16_to_cpu(cmd.cid),
+                 le64_to_cpu(cmd.dbd.prpl.prp1),
+                 le64_to_cpu(cmd.dbd.prpl.prp2),
+                 le32_to_cpu(cmd.data_xfer_size),
                  le32_to_cpu(cmd.dw.admin.cdw10),
                  le32_to_cpu(cmd.dw.admin.cdw11),
                  le32_to_cpu(cmd.dw.admin.cdw12),
