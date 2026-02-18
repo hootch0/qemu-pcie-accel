@@ -168,7 +168,7 @@ struct accel_cmd {
 struct accel_cqe {
 	__le16	sq_head;
 	__le16	cid;
-	__le32	status;		/* [0]=phase, [31:1]=status code */
+	__le32	status;		/* SC[15:0], SCT[23:16], rsvd[30:24], P[31] */
 	__le64	result;
 } __packed;
 

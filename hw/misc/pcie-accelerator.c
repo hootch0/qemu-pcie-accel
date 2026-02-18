@@ -290,9 +290,9 @@ void accel_post_cqes(void *opaque)
         /* Build completion entry */
         req->cqe.sq_head = cpu_to_le16(sq->head);
 
-        /* Set status with phase bit (32-bit) */
+        /* Set status with phase bit (32-bit): SC=req->status, SCT=0, P=cq->phase */
         req->cqe.status = cpu_to_le32(ACCEL_CQE_BUILD_STATUS(req->status,
-                                                               cq->phase));
+                                                               0, cq->phase));
 
         /* Write CQE to host memory */
         addr = cq->dma_addr + (cq->tail << ACCEL_CQES);

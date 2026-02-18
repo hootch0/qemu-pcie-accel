@@ -207,11 +207,11 @@ int accel_setup_p2p_peer(struct accel_dev *dev, u16 peer_bdf)
 		goto err_unmap;
 	}
 
-	/* Check command status */
-	if ((le16_to_cpu(cqe.status) >> 1) != 0) {
+	/* Check completion status code (bits [15:0]) */
+	if ((le32_to_cpu(cqe.status) & 0xFFFF) != 0) {
 		dev_err(&dev->pdev->dev,
 			"P2P setup failed: device status 0x%x\n",
-			le16_to_cpu(cqe.status) >> 1);
+			le32_to_cpu(cqe.status) & 0xFFFF);
 		ret = -EIO;
 		goto err_unmap;
 	}

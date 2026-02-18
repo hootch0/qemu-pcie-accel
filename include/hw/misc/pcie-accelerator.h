@@ -104,27 +104,35 @@ QEMU_BUILD_BUG_ON(sizeof(AccelCmd) != 64);
 typedef struct QEMU_PACKED AccelCqe {
     uint16_t sq_head;         /* SQ head pointer at completion time */
     uint16_t cid;             /* Command identifier from submission */
-    uint32_t status;          /* Status[0] = phase bit, Status[31:1] = status code */
+    uint32_t status;          /* SC[15:0], SCT[23:16], rsvd[30:24], Phase[31] */
     uint64_t result;          /* Command-specific result (64-bit) */
 } AccelCqe;
 
 QEMU_BUILD_BUG_ON(sizeof(AccelCqe) != 16);
 
 /*
- * Helper macros for CQE status field manipulation
+ * CQE status field layout (32 bits):
+ *   [15:0]  - Status Code (SC)
+ *   [23:16] - Status Code Type (SCT)
+ *   [30:24] - Reserved
+ *   [31]    - Phase (P) - toggles on CQ wrap
  */
-#define ACCEL_CQE_STATUS_PHASE_MASK 0x00000001
-#define ACCEL_CQE_STATUS_CODE_SHIFT 1
-#define ACCEL_CQE_STATUS_CODE_MASK  0xFFFFFFFE
-#define ACCEL_CQE_DNR_SHIFT         31
+#define ACCEL_CQE_STATUS_SC_MASK      0x0000FFFF
+#define ACCEL_CQE_STATUS_SCT_SHIFT    16
+#define ACCEL_CQE_STATUS_SCT_MASK     0x00FF0000
+#define ACCEL_CQE_STATUS_PHASE_SHIFT  31
+#define ACCEL_CQE_STATUS_PHASE_MASK   0x80000000
 
-/* Extract status code from CQE status field (32-bit) */
-#define ACCEL_CQE_STATUS_CODE(status) (((status) >> ACCEL_CQE_STATUS_CODE_SHIFT) & 0x7FFFFFFF)
+/* Extract fields from CQE status */
+#define ACCEL_CQE_SC(status)    ((status) & ACCEL_CQE_STATUS_SC_MASK)
+#define ACCEL_CQE_SCT(status)   (((status) >> ACCEL_CQE_STATUS_SCT_SHIFT) & 0xFF)
+#define ACCEL_CQE_PHASE(status) (((status) >> ACCEL_CQE_STATUS_PHASE_SHIFT) & 0x1)
 
-/* Build CQE status field from code and phase (32-bit) */
-#define ACCEL_CQE_BUILD_STATUS(code, phase) \
-    ((((code) << ACCEL_CQE_STATUS_CODE_SHIFT) & ACCEL_CQE_STATUS_CODE_MASK) | \
-     ((phase) & ACCEL_CQE_STATUS_PHASE_MASK))
+/* Build CQE status from status code, status code type, and phase */
+#define ACCEL_CQE_BUILD_STATUS(sc, sct, phase) \
+    (((sc) & ACCEL_CQE_STATUS_SC_MASK) | \
+     (((sct) << ACCEL_CQE_STATUS_SCT_SHIFT) & ACCEL_CQE_STATUS_SCT_MASK) | \
+     (((phase) << ACCEL_CQE_STATUS_PHASE_SHIFT) & ACCEL_CQE_STATUS_PHASE_MASK))
 
 /*
  * ===== Queue State Structures =====

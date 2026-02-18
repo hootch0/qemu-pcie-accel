@@ -365,7 +365,7 @@ static void accel_request_timeout(struct timer_list *t)
  * Completion Queue Entry (CQE) Format (16 bytes):
  *   Offset 0x00: sq_head (2 bytes) - SQ head at completion time
  *   Offset 0x02: cid (2 bytes) - Command ID
- *   Offset 0x04: status (4 bytes) - Status[0]=phase, Status[31:1]=code
+ *   Offset 0x04: status (4 bytes) - SC[15:0], SCT[23:16], rsvd[30:24], P[31]
  *   Offset 0x08: result (8 bytes) - Command-specific result (64-bit)
  *
  * Phase Bit Protocol:
@@ -384,11 +384,11 @@ static void accel_request_timeout(struct timer_list *t)
 static inline bool accel_cqe_valid(struct accel_cqe *cqe, u8 phase)
 {
 	/*
-	 * Read the status word and check phase bit.
+	 * Read the status word and check phase bit (bit 31).
 	 * The device sets the phase bit to match our expected value
 	 * when writing a new completion.
 	 */
-	return (le32_to_cpu(cqe->status) & 0x1) == phase;
+	return !!(le32_to_cpu(cqe->status) & 0x80000000) == phase;
 }
 
 /**
@@ -451,7 +451,7 @@ static int accel_process_cq_threaded(struct accel_queue *queue)
 		/* Extract completion data */
 		cid = le16_to_cpu(cqe->cid);
 		result = le64_to_cpu(cqe->result);
-		status = le32_to_cpu(cqe->status) >> 1;  /* Remove phase bit */
+		status = le32_to_cpu(cqe->status) & 0xFFFF;  /* Extract SC */
 
 		/* Update SQ head from completion */
 		queue->sq_head = le16_to_cpu(cqe->sq_head);
@@ -804,8 +804,8 @@ static int accel_wait_for_completion(struct accel_queue *queue, u16 cid,
 				if (cqe)
 					memcpy(cqe, q_cqe, sizeof(*cqe));
 
-				/* Extract status (remove phase bit) */
-				status = le32_to_cpu(q_cqe->status) >> 1;
+				/* Extract status code (bits [15:0]) */
+				status = le32_to_cpu(q_cqe->status) & 0xFFFF;
 
 				/* Advance CQ head */
 				queue->cq_head++;
@@ -1091,10 +1091,10 @@ int accel_create_queue(struct accel_dev *dev, u16 qid, u16 sq_size, u16 cq_size)
 		goto err_free_cq;
 	}
 
-	/* Check completion status (status is in bits [31:1]) */
-	if ((le32_to_cpu(cqe.status) >> 1) != 0) {
+	/* Check completion status code (bits [15:0]) */
+	if ((le32_to_cpu(cqe.status) & 0xFFFF) != 0) {
 		dev_err(&dev->pdev->dev, "Create CQ %u failed: status 0x%x\n",
-			qid, le32_to_cpu(cqe.status) >> 1);
+			qid, le32_to_cpu(cqe.status) & 0xFFFF);
 		ret = -EIO;
 		goto err_free_cq;
 	}
@@ -1114,10 +1114,10 @@ int accel_create_queue(struct accel_dev *dev, u16 qid, u16 sq_size, u16 cq_size)
 		goto err_delete_cq;
 	}
 
-	/* Check completion status */
-	if ((le32_to_cpu(cqe.status) >> 1) != 0) {
+	/* Check completion status code (bits [15:0]) */
+	if ((le32_to_cpu(cqe.status) & 0xFFFF) != 0) {
 		dev_err(&dev->pdev->dev, "Create SQ %u failed: status 0x%x\n",
-			qid, le32_to_cpu(cqe.status) >> 1);
+			qid, le32_to_cpu(cqe.status) & 0xFFFF);
 		ret = -EIO;
 		goto err_delete_cq;
 	}

@@ -170,7 +170,7 @@ struct accel_cmd {
 struct accel_cqe {
     uint16_t sq_head;         /* SQ head at completion */
     uint16_t cid;             /* Command ID */
-    uint32_t status;          /* Status[0]=phase, Status[31:1]=code */
+    uint32_t status;          /* SC[15:0], SCT[23:16], rsvd[30:24], P[31] */
     uint64_t result;          /* Command-specific result (64-bit) */
 } __attribute__((packed));
 
