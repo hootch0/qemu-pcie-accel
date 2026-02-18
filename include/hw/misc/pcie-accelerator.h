@@ -183,6 +183,40 @@ typedef struct QEMU_PACKED AccelCqe {
 QEMU_BUILD_BUG_ON(sizeof(AccelCqe) != 16);
 
 /*
+ * Identify Data Structures (4096 bytes total)
+ *
+ * Returned by the Identify admin command (opcode 0x00).
+ */
+
+/* Hardware Info (1020 bytes) */
+typedef struct QEMU_PACKED AccelDevHwInfo {
+    uint16_t tid;                   /* Type ID */
+    uint16_t dev_id;                /* Device ID */
+    uint8_t  reserved[1016];
+} AccelDevHwInfo;
+
+QEMU_BUILD_BUG_ON(sizeof(AccelDevHwInfo) != 1020);
+
+/* Memory Region Descriptor (16 bytes) */
+typedef struct QEMU_PACKED AccelDevMemRegion {
+    uint64_t desc;                  /* cid[5:0], type[7:6], pid[15:8], size[63:16] */
+    uint64_t addr;                  /* Region base address */
+} AccelDevMemRegion;
+
+QEMU_BUILD_BUG_ON(sizeof(AccelDevMemRegion) != 16);
+
+/* Identify Data (4096 bytes) */
+typedef struct QEMU_PACKED AccelIdData {
+    uint32_t        data_len;       /* Total data length in bytes */
+    AccelDevHwInfo  hw_info;        /* Hardware info */
+    uint32_t        mem_region_count; /* Number of valid memory regions */
+    uint8_t         rsvd[12];       /* Reserved */
+    AccelDevMemRegion mem_regions[ACCEL_ID_MAX_MEM_REGIONS]; /* Memory regions */
+} AccelIdData;
+
+QEMU_BUILD_BUG_ON(sizeof(AccelIdData) != 4096);
+
+/*
  * CQE status field layout (32 bits):
  *   [15:0]  - Status Code (SC)
  *   [23:16] - Status Code Type (SCT)
@@ -396,6 +430,10 @@ struct PCIeAccel {
     MemoryRegion cmb;                   /* BAR2: CMB RAM */
     MemoryRegion msix_bar;              /* BAR4: MSI-X table/PBA (16KB) */
 
+    /* Device Physical Address (DPA) Memory - internal, not BAR-mapped */
+    HostMemoryBackend *dpa_memdev;      /* DPA file-backed memory backend */
+    MemoryRegion *dpa_mr;               /* DPA memory region (from backend) */
+
     /* Device Registers (in-memory representation of BAR0) */
     struct {
         uint64_t cap;                   /* Capability register */
@@ -459,6 +497,9 @@ struct PCIeAccel {
         uint64_t dma_errors;            /* Total DMA errors */
         uint64_t cmd_errors;            /* Total command errors */
     } stats;
+
+    /* Device Instance */
+    uint16_t dev_id;                    /* Sequential device ID (assigned at realize) */
 
     /* Device Properties (from QEMU command line) */
     char *serial;                       /* Serial number */

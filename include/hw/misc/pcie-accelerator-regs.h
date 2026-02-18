@@ -542,10 +542,48 @@
 #define ACCEL_SC_P2R_SLOT_ACTIVE        0x51  /* Slot already in use */
 #define ACCEL_SC_P2R_PEER_MISMATCH      0x52  /* Peer device type mismatch */
 
+/* ===== Identify Data - Memory Region Descriptor Fields ===== */
+/*
+ * dev_mem_region.desc (64 bits):
+ *   Bits [5:0]   - CID: Component ID
+ *   Bits [7:6]   - TYPE: Memory type (0=MMIO, 1=MEM, 2=reserved, 3=reserved)
+ *   Bits [15:8]  - PID: Partition ID (BAR number)
+ *   Bits [63:16] - SIZE: Region size in bytes
+ */
+#define ACCEL_MR_CID_SHIFT      0
+#define ACCEL_MR_CID_MASK       0x3F
+#define ACCEL_MR_TYPE_SHIFT     6
+#define ACCEL_MR_TYPE_MASK      0x3
+#define ACCEL_MR_PID_SHIFT      8
+#define ACCEL_MR_PID_MASK       0xFF
+#define ACCEL_MR_SIZE_SHIFT     16
+#define ACCEL_MR_SIZE_MASK      0xFFFFFFFFFFFFULL
+
+/* Memory region types */
+#define ACCEL_MR_TYPE_MMIO      0       /* MMIO registers */
+#define ACCEL_MR_TYPE_MEM       1       /* Memory (RAM) */
+
+/* Build memory region descriptor */
+#define ACCEL_MR_DESC(cid, type, pid, size)                              \
+    ((((uint64_t)(cid)  & ACCEL_MR_CID_MASK)  << ACCEL_MR_CID_SHIFT)  | \
+     (((uint64_t)(type) & ACCEL_MR_TYPE_MASK)  << ACCEL_MR_TYPE_SHIFT) | \
+     (((uint64_t)(pid)  & ACCEL_MR_PID_MASK)   << ACCEL_MR_PID_SHIFT) | \
+     (((uint64_t)(size) & ACCEL_MR_SIZE_MASK)   << ACCEL_MR_SIZE_SHIFT))
+
+/* Maximum memory regions in identify data */
+#define ACCEL_ID_MAX_MEM_REGIONS    191
+
 /* ===== BAR Sizes ===== */
 #define ACCEL_BAR0_SIZE         (8 * 1024)         /* 8KB - MMIO registers + doorbells */
 #define ACCEL_CMB_SIZE          (32 * 1024 * 1024)   /* 16MB - Controller Memory Buffer (BAR2) */
 #define ACCEL_BAR4_SIZE         (16 * 1024)         /* 16KB - MSI-X table/PBA */
+
+/* ===== Device Physical Address (DPA) Memory ===== */
+/*
+ * Internal device memory accessible only via MEM_READ/MEM_WRITE commands.
+ * Not BAR-mapped. DPA base starts after CMB in the device address space.
+ */
+#define ACCEL_DPA_BASE          ACCEL_CMB_SIZE      /* DPA starts after CMB */
 
 /* MSI-X table/PBA offsets within BAR4 */
 #define ACCEL_MSIX_TABLE_OFFSET     0x0000  /* MSI-X table at BAR4 offset 0 */

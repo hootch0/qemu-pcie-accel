@@ -244,6 +244,44 @@ struct accel_cqe {
     uint64_t result;          /* Command-specific result (64-bit) */
 } __attribute__((packed));
 
+/*
+ * ===== Identify Data Structures (4096 bytes total) =====
+ */
+
+/* Memory region descriptor field layout */
+#define ACCEL_MR_CID_SHIFT      0
+#define ACCEL_MR_CID_MASK       0x3F
+#define ACCEL_MR_TYPE_SHIFT     6
+#define ACCEL_MR_TYPE_MASK      0x3
+#define ACCEL_MR_PID_SHIFT      8
+#define ACCEL_MR_PID_MASK       0xFF
+#define ACCEL_MR_SIZE_SHIFT     16
+#define ACCEL_MR_SIZE_MASK      0xFFFFFFFFFFFFULL
+
+#define ACCEL_MR_TYPE_MMIO      0
+#define ACCEL_MR_TYPE_MEM       1
+
+#define ACCEL_ID_MAX_MEM_REGIONS    191
+
+struct dev_hw_info {
+    uint16_t tid;               /* Type ID */
+    uint16_t dev_id;            /* Device ID */
+    uint8_t  reserved[1016];
+} __attribute__((packed));
+
+struct dev_mem_region {
+    uint64_t desc;              /* cid[5:0], type[7:6], pid[15:8], size[63:16] */
+    uint64_t addr;              /* Region base address */
+} __attribute__((packed));
+
+struct id_data {
+    uint32_t data_len;          /* Total data length */
+    struct dev_hw_info hw_info; /* Hardware info (1020 bytes) */
+    uint32_t mem_region_count;  /* Number of valid memory regions */
+    uint8_t  rsvd[12];
+    struct dev_mem_region mem_regions[ACCEL_ID_MAX_MEM_REGIONS];
+} __attribute__((packed));
+
 /**
  * struct accel_stats - Device statistics
  */

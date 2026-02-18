@@ -241,6 +241,44 @@ struct accel_cqe {
 	__le64	result;
 } __packed;
 
+/*
+ * ===== Identify Data Structures (4096 bytes total) =====
+ */
+
+/* Memory region descriptor field layout */
+#define ACCEL_MR_CID_SHIFT	0
+#define ACCEL_MR_CID_MASK	0x3F
+#define ACCEL_MR_TYPE_SHIFT	6
+#define ACCEL_MR_TYPE_MASK	0x3
+#define ACCEL_MR_PID_SHIFT	8
+#define ACCEL_MR_PID_MASK	0xFF
+#define ACCEL_MR_SIZE_SHIFT	16
+#define ACCEL_MR_SIZE_MASK	0xFFFFFFFFFFFFULL
+
+#define ACCEL_MR_TYPE_MMIO	0
+#define ACCEL_MR_TYPE_MEM	1
+
+#define ACCEL_ID_MAX_MEM_REGIONS	191
+
+struct dev_hw_info {
+	__le16	tid;			/* Type ID */
+	__le16	dev_id;			/* Device ID */
+	__u8	reserved[1016];
+} __packed;
+
+struct dev_mem_region {
+	__le64	desc;			/* cid[5:0], type[7:6], pid[15:8], size[63:16] */
+	__le64	addr;			/* Region base address */
+} __packed;
+
+struct id_data {
+	__le32	data_len;		/* Total data length */
+	struct dev_hw_info hw_info;	/* Hardware info (1020 bytes) */
+	__le32	mem_region_count;	/* Number of valid memory regions */
+	__u8	rsvd[12];
+	struct dev_mem_region mem_regions[ACCEL_ID_MAX_MEM_REGIONS];
+} __packed;
+
 /**
  * struct accel_uring_cmd - io_uring command structure
  *

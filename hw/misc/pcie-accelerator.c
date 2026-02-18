@@ -517,14 +517,45 @@ uint16_t accel_cmd_loopback(PCIeAccel *n, AccelRequest *req)
 }
 
 /**
+ * accel_resolve_dev_addr - Resolve device address to RAM pointer
+ * @n: Device state
+ * @dev_addr: Device physical address
+ * @length: Access length in bytes
+ *
+ * Maps a device physical address to the backing RAM pointer.
+ * Address ranges:
+ *   [0, ACCEL_CMB_SIZE)                          -> CMB (BAR2)
+ *   [ACCEL_DPA_BASE, ACCEL_DPA_BASE + dpa_size)  -> DPA (internal)
+ *
+ * Returns: RAM pointer on success, NULL if address out of range
+ */
+static void *accel_resolve_dev_addr(PCIeAccel *n, uint64_t dev_addr,
+                                    uint32_t length)
+{
+    if (dev_addr + length <= ACCEL_CMB_SIZE) {
+        return (uint8_t *)memory_region_get_ram_ptr(&n->cmb) + dev_addr;
+    }
+
+    if (n->dpa_mr && dev_addr >= ACCEL_DPA_BASE) {
+        uint64_t dpa_size = memory_region_size(n->dpa_mr);
+        uint64_t offset = dev_addr - ACCEL_DPA_BASE;
+        if (offset + length <= dpa_size) {
+            return (uint8_t *)memory_region_get_ram_ptr(n->dpa_mr) + offset;
+        }
+    }
+
+    return NULL;
+}
+
+/**
  * accel_cmd_mem_read - Read from device memory to host
  * @n: Device state
  * @req: Request structure
  *
- * Reads data from device CMB memory and DMA writes it to host memory.
+ * Reads data from device memory (CMB or DPA) and DMA writes to host.
  *
  * Command fields (from cmd->mem_read):
- * - dev_addr:   CMB offset to read from (device source)
+ * - dev_addr:   Device physical address (source)
  * - host_addr:  Host buffer DMA address (destination)
  * - length:     Transfer length in bytes
  *
@@ -537,7 +568,7 @@ uint16_t accel_cmd_mem_read(PCIeAccel *n, AccelRequest *req)
     uint64_t host_addr = le64_to_cpu(cmd->mem_read.host_addr);
     uint32_t length = le32_to_cpu(cmd->mem_read.length);
     uint16_t status;
-    void *cmb_ram;
+    void *dev_ptr;
     void *buf;
 
     qemu_log_mask(LOG_UNIMP,
@@ -545,30 +576,21 @@ uint16_t accel_cmd_mem_read(PCIeAccel *n, AccelRequest *req)
                   " host_addr=0x%" PRIx64 " length=%u\n",
                   dev_addr, host_addr, length);
 
-    /* Validate length */
     if (length == 0 || length > (1 * MiB)) {
         return ACCEL_SC_INVALID_FIELD;
     }
 
-    /* Validate device address range */
-    if (dev_addr + length > ACCEL_CMB_SIZE) {
+    dev_ptr = accel_resolve_dev_addr(n, dev_addr, length);
+    if (!dev_ptr) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "pcie-accel: MEM_READ dev_addr 0x%" PRIx64
-                      " + len %u exceeds CMB size\n", dev_addr, length);
+                      " + len %u out of range\n", dev_addr, length);
         return ACCEL_SC_LBA_OUT_OF_RANGE;
     }
 
-    /* Allocate bounce buffer */
     buf = g_malloc(length);
-    if (!buf) {
-        return ACCEL_SC_INTERNAL_ERROR;
-    }
+    memcpy(buf, dev_ptr, length);
 
-    /* Copy from device CMB to bounce buffer */
-    cmb_ram = memory_region_get_ram_ptr(&n->cmb);
-    memcpy(buf, (uint8_t *)cmb_ram + dev_addr, length);
-
-    /* DMA write to host memory */
     status = accel_dma_write_safe(n, host_addr, buf, length);
     g_free(buf);
 
@@ -584,10 +606,10 @@ uint16_t accel_cmd_mem_read(PCIeAccel *n, AccelRequest *req)
  * @n: Device state
  * @req: Request structure
  *
- * DMA reads data from host memory and writes it to device CMB memory.
+ * DMA reads from host memory and writes to device memory (CMB or DPA).
  *
  * Command fields (from cmd->mem_write):
- * - dev_addr:   CMB offset to write to (device destination)
+ * - dev_addr:   Device physical address (destination)
  * - host_addr:  Host buffer DMA address (source)
  * - length:     Transfer length in bytes
  *
@@ -600,7 +622,7 @@ uint16_t accel_cmd_mem_write(PCIeAccel *n, AccelRequest *req)
     uint64_t host_addr = le64_to_cpu(cmd->mem_write.host_addr);
     uint32_t length = le32_to_cpu(cmd->mem_write.length);
     uint16_t status;
-    void *cmb_ram;
+    void *dev_ptr;
     void *buf;
 
     qemu_log_mask(LOG_UNIMP,
@@ -608,35 +630,27 @@ uint16_t accel_cmd_mem_write(PCIeAccel *n, AccelRequest *req)
                   " host_addr=0x%" PRIx64 " length=%u\n",
                   dev_addr, host_addr, length);
 
-    /* Validate length */
     if (length == 0 || length > (1 * MiB)) {
         return ACCEL_SC_INVALID_FIELD;
     }
 
-    /* Validate device address range */
-    if (dev_addr + length > ACCEL_CMB_SIZE) {
+    dev_ptr = accel_resolve_dev_addr(n, dev_addr, length);
+    if (!dev_ptr) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "pcie-accel: MEM_WRITE dev_addr 0x%" PRIx64
-                      " + len %u exceeds CMB size\n", dev_addr, length);
+                      " + len %u out of range\n", dev_addr, length);
         return ACCEL_SC_LBA_OUT_OF_RANGE;
     }
 
-    /* Allocate bounce buffer */
     buf = g_malloc(length);
-    if (!buf) {
-        return ACCEL_SC_INTERNAL_ERROR;
-    }
 
-    /* DMA read from host memory */
     status = accel_dma_read_safe(n, host_addr, buf, length);
     if (status != ACCEL_SC_SUCCESS) {
         g_free(buf);
         return status;
     }
 
-    /* Copy from bounce buffer to device CMB */
-    cmb_ram = memory_region_get_ram_ptr(&n->cmb);
-    memcpy((uint8_t *)cmb_ram + dev_addr, buf, length);
+    memcpy(dev_ptr, buf, length);
     g_free(buf);
 
     req->cqe.result = cpu_to_le64(length);
@@ -709,37 +723,26 @@ uint16_t accel_cmd_identify(PCIeAccel *n, AccelRequest *req)
 {
     AccelCmd *cmd = &req->cmd;
     uint64_t prp1 = le64_to_cpu(cmd->dbd.prpl.prp1);
-    uint16_t status;
-    uint8_t buf[4096] = {0};
+    AccelIdData id = {0};
+    uint32_t nr = 0;
 
-    /*
-     * Identify structure (simplified):
-     * Offset 0-3:   Version (major.minor.tertiary)
-     * Offset 4-7:   Max I/O queue pairs
-     * Offset 8-11:  Max queue entries
-     * Offset 12-15: P2P max peers
-     * Offset 16-19: P2P max xfers
-     * Offset 20-23: PASID width (0 if disabled)
-     */
+    /* Hardware info */
+    id.hw_info.tid = 0;
+    id.hw_info.dev_id = cpu_to_le16(n->dev_id);
 
-    /* Version (1.0.0) */
-    *(uint32_t *)(buf + 0) = cpu_to_le32(0x00010000);
+    /* Memory regions - report device-internal DPA region */
+    if (n->dpa_mr) {
+        uint64_t dpa_size = memory_region_size(n->dpa_mr);
+        id.mem_regions[nr].desc = cpu_to_le64(
+            ACCEL_MR_DESC(0, ACCEL_MR_TYPE_MEM, 0, dpa_size));
+        id.mem_regions[nr].addr = cpu_to_le64(ACCEL_DPA_BASE);
+        nr++;
+    }
 
-    /* Queue capabilities */
-    *(uint32_t *)(buf + 4) = cpu_to_le32(n->max_ioqpairs);
-    *(uint32_t *)(buf + 8) = cpu_to_le32(ACCEL_MAX_QUEUE_ENTRIES);
+    id.mem_region_count = cpu_to_le32(nr);
+    id.data_len = cpu_to_le32(sizeof(id));
 
-    /* P2P capabilities */
-    *(uint32_t *)(buf + 12) = cpu_to_le32(n->p2p.max_peers);
-    *(uint32_t *)(buf + 16) = cpu_to_le32(n->p2p.max_xfers_per_peer);
-
-    /* PASID/SVA capabilities */
-    *(uint32_t *)(buf + 20) = cpu_to_le32(n->sva.enabled ? n->sva.pasid_width : 0);
-
-    /* Write to host memory */
-    status = accel_dma_write_safe(n, prp1, buf, sizeof(buf));
-
-    return status;
+    return accel_dma_write_safe(n, prp1, &id, sizeof(id));
 }
 
 /**
@@ -1515,6 +1518,10 @@ void pcie_accel_realize(PCIDevice *pci_dev, Error **errp)
     Error *local_err = NULL;
     int ret;
 
+    /* Assign sequential device ID */
+    static uint16_t next_dev_id;
+    n->dev_id = next_dev_id++;
+
     /* Initialize PCIe endpoint capability */
     ret = pcie_endpoint_cap_init(pci_dev, 0x80);
     if (ret < 0) {
@@ -1570,6 +1577,15 @@ void pcie_accel_realize(PCIDevice *pci_dev, Error **errp)
 
     /* Enable MSI-X vector 0 for admin queue */
     msix_vector_use(pci_dev, 0);
+
+    /* Initialize DPA memory from backend (device-internal, not BAR-mapped) */
+    if (n->dpa_memdev) {
+        n->dpa_mr = host_memory_backend_get_memory(n->dpa_memdev);
+        if (!n->dpa_mr) {
+            error_setg(errp, "Failed to get DPA memory from backend");
+            return;
+        }
+    }
 
     /* Initialize capability register */
     n->bar.cap = (1ULL << ACCEL_CAP_P2P_SHIFT) |          /* P2P MMIO queues */
@@ -1675,6 +1691,8 @@ static const Property pcie_accel_props[] = {
     DEFINE_PROP_UINT8("p2p_max_xfers", PCIeAccel, p2p.max_xfers_per_peer, 64),
     DEFINE_PROP_BOOL("sva_enable", PCIeAccel, sva.enabled, false),
     DEFINE_PROP_UINT8("pasid_width", PCIeAccel, sva.pasid_width, 16),
+    DEFINE_PROP_LINK("dpa_memdev", PCIeAccel, dpa_memdev,
+                     TYPE_MEMORY_BACKEND, HostMemoryBackend *),
 };
 
 static void pcie_accel_class_init(ObjectClass *oc, const void *data)
