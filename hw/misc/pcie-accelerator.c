@@ -729,6 +729,10 @@ uint16_t accel_cmd_identify(PCIeAccel *n, AccelRequest *req)
     /* Hardware info */
     id.hw_info.tid = 0;
     id.hw_info.dev_id = cpu_to_le16(n->dev_id);
+    id.hw_info.ccnt = cpu_to_le16(16);
+    id.hw_info.pcnt = cpu_to_le16(8);
+    id.hw_info.cmem = cpu_to_le64(48ULL * 1024 * 1024 * 1024);
+    id.hw_info.csmem = cpu_to_le32(10 * 1024 * 1024);
 
     /* Memory regions - report device-internal DPA region */
     if (n->dpa_mr) {

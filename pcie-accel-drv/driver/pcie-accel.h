@@ -262,7 +262,13 @@ struct accel_cqe {
 struct dev_hw_info {
 	__le16	tid;			/* Type ID */
 	__le16	dev_id;			/* Device ID */
-	__u8	reserved[1016];
+	__u8	reserved0[14];
+	__le16	ccnt;			/* Component count */
+	__le16	pcnt;			/* Partition count */
+	__u8	reserved1[2];
+	__le64	cmem;			/* Component memory size */
+	__le32	csmem;			/* Component shared memory size */
+	__u8	reserved2[984];
 } __packed;
 
 struct dev_mem_region {

@@ -192,7 +192,13 @@ QEMU_BUILD_BUG_ON(sizeof(AccelCqe) != 16);
 typedef struct QEMU_PACKED AccelDevHwInfo {
     uint16_t tid;                   /* Type ID */
     uint16_t dev_id;                /* Device ID */
-    uint8_t  reserved[1016];
+    uint8_t reserved0[14];
+    uint16_t ccnt;
+    uint16_t pcnt;
+    uint8_t reserved1[2];
+    uint64_t cmem;
+    uint32_t csmem;
+    uint8_t  reserved2[984];
 } AccelDevHwInfo;
 
 QEMU_BUILD_BUG_ON(sizeof(AccelDevHwInfo) != 1020);
