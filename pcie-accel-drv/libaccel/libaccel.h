@@ -89,6 +89,17 @@ extern "C" {
 #define ACCEL_CMD_MEM_READ          0x05
 #define ACCEL_CMD_MEM_WRITE         0x06
 
+/* Command flags (cmd.flags) */
+#define ACCEL_CMD_FLAGS_DBD_MASK    0x03
+#define ACCEL_CMD_FLAGS_DBD_PRPL    0x00  /* PRP List */
+#define ACCEL_CMD_FLAGS_DBD_SGL     0x01  /* Scatter-Gather List */
+#define ACCEL_CMD_FLAGS_DBD_SVA     0x02  /* Shared Virtual Address */
+
+/* SGL Descriptor Types (dbd.sgl.type[7:0]) */
+#define ACCEL_SGL_DESC_DATA_BLOCK   0x00  /* Data Block Descriptor */
+#define ACCEL_SGL_DESC_SEGMENT      0x02  /* Segment Descriptor (chain) */
+#define ACCEL_SGL_DESC_LAST_SEGMENT 0x03  /* Last Segment Descriptor */
+
 /*
  * ===== Status Codes =====
  */
@@ -131,7 +142,7 @@ union accel_cmd {
         union {
             struct { uint64_t prp1; uint64_t prp2; } prpl;
             struct { uint64_t addr; uint32_t length; uint32_t type; } sgl;
-            struct { uint64_t addr; uint64_t rsvd; } hva;
+            struct { uint64_t addr; uint32_t pasid; uint32_t reserved; } sva;
         } dbd;
 
         uint32_t data_xfer_size;  /* Data transfer size in bytes */

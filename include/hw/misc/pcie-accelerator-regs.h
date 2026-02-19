@@ -374,7 +374,7 @@
  * Bits [1:0] - DBD_TYPE: Data Block Descriptor type
  *   00 = PRPL (Physical Region Page List)
  *   01 = SGL  (Scatter-Gather List)
- *   10 = HVA  (Host Virtual Address)
+ *   10 = SVA  (Shared Virtual Address)
  *   11 = Reserved
  *
  * Bit [2] - PASID_EN: Enable PASID for this command
@@ -384,9 +384,14 @@
 #define ACCEL_CMD_FLAGS_DBD_MASK        0x03
 #define ACCEL_CMD_FLAGS_DBD_PRPL        0x00  /* PRP List */
 #define ACCEL_CMD_FLAGS_DBD_SGL         0x01  /* Scatter-Gather List */
-#define ACCEL_CMD_FLAGS_DBD_HVA         0x02  /* Host Virtual Address */
+#define ACCEL_CMD_FLAGS_DBD_SVA         0x02  /* Shared Virtual Address */
 #define ACCEL_CMD_FLAGS_PASID_EN        0x04  /* PASID enable */
 #define ACCEL_CMD_FLAGS_PRIV            0x08  /* Privileged operation */
+
+/* SGL Descriptor Types (dbd.sgl.type[7:0]) */
+#define ACCEL_SGL_DESC_DATA_BLOCK       0x00  /* Data Block Descriptor */
+#define ACCEL_SGL_DESC_SEGMENT          0x02  /* Segment Descriptor (chain) */
+#define ACCEL_SGL_DESC_LAST_SEGMENT     0x03  /* Last Segment Descriptor */
 
 /* ===== Completion Status Codes ===== */
 /*
@@ -560,7 +565,7 @@
 #define ACCEL_MR_SIZE_MASK      0xFFFFFFFFFFFFULL
 
 /* Memory region types */
-#define ACCEL_MR_TYPE_MEM       1       /* Memory (RAM) */
+#define ACCEL_MR_TYPE_MEM       0       /* Memory (RAM) */
 
 /* Build memory region descriptor */
 #define ACCEL_MR_DESC(cid, type, pid, size)                              \

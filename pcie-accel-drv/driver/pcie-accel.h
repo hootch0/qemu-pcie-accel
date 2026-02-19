@@ -74,6 +74,17 @@
 #define ACCEL_CMD_MEM_READ		0x05
 #define ACCEL_CMD_MEM_WRITE		0x06
 
+/* Command flags (cmd.flags) */
+#define ACCEL_CMD_FLAGS_DBD_MASK	0x03
+#define ACCEL_CMD_FLAGS_DBD_PRPL	0x00	/* PRP List */
+#define ACCEL_CMD_FLAGS_DBD_SGL		0x01	/* Scatter-Gather List */
+#define ACCEL_CMD_FLAGS_DBD_SVA		0x02	/* Shared Virtual Address */
+
+/* SGL Descriptor Types (dbd.sgl.type[7:0]) */
+#define ACCEL_SGL_DESC_DATA_BLOCK	0x00	/* Data Block Descriptor */
+#define ACCEL_SGL_DESC_SEGMENT		0x02	/* Segment Descriptor (chain) */
+#define ACCEL_SGL_DESC_LAST_SEGMENT	0x03	/* Last Segment Descriptor */
+
 /* P2P Ring Buffer constants */
 #define ACCEL_P2R_MAX_SLOTS		7
 #define ACCEL_RING_SIZE			(1 * 1024 * 1024)
@@ -132,7 +143,7 @@ union accel_cmd {
 		union {
 			struct { __le64 prp1; __le64 prp2; } prpl;
 			struct { __le64 addr; __le32 length; __le32 type; } sgl;
-			struct { __le64 addr; __le64 rsvd; } hva;
+			struct { __le64 addr; __le32 pasid; __le32 reserved; } sva;
 		} dbd;
 		__le32	data_xfer_size;
 		__le64	rsvd2;

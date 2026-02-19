@@ -55,7 +55,7 @@ typedef union QEMU_PACKED AccelCmd {
         union {
             struct { uint64_t prp1; uint64_t prp2; } prpl;
             struct { uint64_t addr; uint32_t length; uint32_t type; } sgl;
-            struct { uint64_t addr; uint64_t rsvd; } hva;
+            struct { uint64_t addr; uint32_t pasid; uint32_t reserved; } sva;
         } dbd;
 
         /* CDW7: Data transfer size */

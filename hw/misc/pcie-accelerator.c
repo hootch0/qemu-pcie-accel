@@ -378,7 +378,7 @@ void accel_post_cqes(void *opaque)
 static uint16_t accel_validate_cmd(PCIeAccel *n, AccelCmd *cmd)
 {
     /* Validate opcode range */
-    if (cmd->opcode > ACCEL_CMD_P2P_READ) {
+    if (cmd->opcode == 0 || cmd->opcode > ACCEL_CMD_MEM_WRITE) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "pcie-accel: Invalid opcode 0x%x\n", cmd->opcode);
         return ACCEL_SC_INVALID_OPCODE;
@@ -548,16 +548,315 @@ static void *accel_resolve_dev_addr(PCIeAccel *n, uint64_t dev_addr,
 }
 
 /**
+ * accel_resolve_xfer_length - Resolve effective transfer length from DBD
+ * @cmd: Command structure
+ * @length: In/out transfer length
+ *
+ * For SGL Data Block descriptors, the transfer length comes from the
+ * SGL descriptor rather than the command field. For all other DBD types
+ * (PRPL, SGL Segment, SVA), the caller-provided length is used as-is.
+ *
+ * Returns: ACCEL_SC_SUCCESS or error status code
+ */
+static uint16_t accel_resolve_xfer_length(AccelCmd *cmd, uint32_t *length)
+{
+    uint8_t dbd_type = cmd->flags & ACCEL_CMD_FLAGS_DBD_MASK;
+
+    switch (dbd_type) {
+    case ACCEL_CMD_FLAGS_DBD_PRPL:
+    case ACCEL_CMD_FLAGS_DBD_SVA:
+        return ACCEL_SC_SUCCESS;
+
+    case ACCEL_CMD_FLAGS_DBD_SGL: {
+        uint8_t sgl_type = le32_to_cpu(cmd->dbd.sgl.type) & 0xFF;
+        if (sgl_type == ACCEL_SGL_DESC_DATA_BLOCK) {
+            *length = le32_to_cpu(cmd->dbd.sgl.length);
+        }
+        /* For Segment/Last Segment, keep command-field length */
+        return ACCEL_SC_SUCCESS;
+    }
+
+    default:
+        return ACCEL_SC_INVALID_FIELD;
+    }
+}
+
+/**
+ * accel_prp_transfer - DMA transfer using PRP list
+ * @n: Device state
+ * @prp1: First PRP entry (may have sub-page offset)
+ * @prp2: Second PRP entry or PRP list pointer
+ * @buf: Device-side buffer
+ * @length: Transfer length in bytes
+ * @is_write: true = write to host (device->host), false = read from host
+ *
+ * NVMe-style PRP semantics:
+ * - PRP1 may have a sub-page offset; subsequent PRPs are page-aligned
+ * - Transfer fits in one page: only PRP1 used
+ * - Transfer spans two pages: PRP2 is the second page address
+ * - Transfer spans >2 pages: PRP2 points to a PRP list (page of entries)
+ *
+ * Returns: ACCEL_SC_SUCCESS or error status code
+ */
+static uint16_t accel_prp_transfer(PCIeAccel *n, uint64_t prp1, uint64_t prp2,
+                                    void *buf, uint32_t length, bool is_write)
+{
+    uint32_t page_size = n->page_size;
+    uint32_t offset = prp1 & (page_size - 1);
+    uint32_t first_chunk = MIN(length, page_size - offset);
+    uint8_t *p = buf;
+    uint16_t status;
+    uint32_t remaining;
+
+    /* Transfer first page (may be partial due to sub-page offset) */
+    if (is_write) {
+        status = accel_dma_write_safe(n, prp1, p, first_chunk);
+    } else {
+        status = accel_dma_read_safe(n, prp1, p, first_chunk);
+    }
+    if (status != ACCEL_SC_SUCCESS) {
+        return status;
+    }
+
+    p += first_chunk;
+    remaining = length - first_chunk;
+
+    if (remaining == 0) {
+        return ACCEL_SC_SUCCESS;
+    }
+
+    if (remaining <= page_size) {
+        /* PRP2 is a direct PRP entry (second page) */
+        if (prp2 == 0) {
+            return ACCEL_SC_INVALID_PRP;
+        }
+        if (is_write) {
+            return accel_dma_write_safe(n, prp2, p, remaining);
+        } else {
+            return accel_dma_read_safe(n, prp2, p, remaining);
+        }
+    }
+
+    /* PRP2 points to a PRP list (array of page-aligned addresses) */
+    if (prp2 == 0) {
+        return ACCEL_SC_INVALID_PRP;
+    }
+
+    uint32_t max_prps = page_size / sizeof(uint64_t);
+    uint64_t *prp_list = g_malloc(page_size);
+
+    status = accel_dma_read_safe(n, prp2, prp_list, page_size);
+    if (status != ACCEL_SC_SUCCESS) {
+        g_free(prp_list);
+        return status;
+    }
+
+    for (uint32_t i = 0; i < max_prps && remaining > 0; i++) {
+        uint64_t prp_entry = le64_to_cpu(prp_list[i]);
+        uint32_t chunk;
+
+        if (prp_entry == 0) {
+            g_free(prp_list);
+            return ACCEL_SC_INVALID_PRP;
+        }
+
+        chunk = MIN(remaining, page_size);
+        if (is_write) {
+            status = accel_dma_write_safe(n, prp_entry, p, chunk);
+        } else {
+            status = accel_dma_read_safe(n, prp_entry, p, chunk);
+        }
+        if (status != ACCEL_SC_SUCCESS) {
+            g_free(prp_list);
+            return status;
+        }
+
+        p += chunk;
+        remaining -= chunk;
+    }
+
+    g_free(prp_list);
+
+    if (remaining > 0) {
+        return ACCEL_SC_INVALID_PRP;
+    }
+
+    return ACCEL_SC_SUCCESS;
+}
+
+/* SGL descriptor for reading chained segments from host memory (16 bytes) */
+typedef struct QEMU_PACKED AccelSglDesc {
+    uint64_t addr;
+    uint32_t length;
+    uint32_t type;
+} AccelSglDesc;
+
+/**
+ * accel_sgl_transfer - DMA transfer using SGL descriptors
+ * @n: Device state
+ * @sgl_addr: Address from first SGL descriptor
+ * @sgl_length: Length from first SGL descriptor
+ * @sgl_type: Type from first SGL descriptor
+ * @buf: Device-side buffer
+ * @length: Total transfer length in bytes
+ * @is_write: true = write to host, false = read from host
+ *
+ * NVMe-style SGL semantics:
+ * - Data Block (0x00): addr + length describe a contiguous host buffer
+ * - Segment (0x02): addr points to array of SGL descriptors, length = array size
+ * - Last Segment (0x03): like Segment, final array in the chain
+ * - Chain pointers must be the last entry in a Segment descriptor array
+ *
+ * Returns: ACCEL_SC_SUCCESS or error status code
+ */
+static uint16_t accel_sgl_transfer(PCIeAccel *n, uint64_t sgl_addr,
+                                    uint32_t sgl_length, uint32_t sgl_type,
+                                    void *buf, uint32_t length, bool is_write)
+{
+    uint8_t *p = buf;
+    uint32_t remaining = length;
+    uint16_t status;
+    uint8_t desc_type = sgl_type & 0xFF;
+
+    /* Single Data Block — direct contiguous transfer */
+    if (desc_type == ACCEL_SGL_DESC_DATA_BLOCK) {
+        uint32_t chunk = MIN(sgl_length, remaining);
+        if (is_write) {
+            return accel_dma_write_safe(n, sgl_addr, p, chunk);
+        } else {
+            return accel_dma_read_safe(n, sgl_addr, p, chunk);
+        }
+    }
+
+    /* Segment / Last Segment: walk the descriptor chain */
+    if (desc_type != ACCEL_SGL_DESC_SEGMENT &&
+        desc_type != ACCEL_SGL_DESC_LAST_SEGMENT) {
+        return ACCEL_SC_INVALID_FIELD;
+    }
+
+    uint64_t seg_addr = sgl_addr;
+    uint32_t seg_len = sgl_length;
+    bool more_segments = true;
+
+    while (more_segments && remaining > 0) {
+        uint32_t num_descs;
+        AccelSglDesc *descs;
+
+        if (seg_len == 0 || seg_len % sizeof(AccelSglDesc) != 0) {
+            return ACCEL_SC_INVALID_FIELD;
+        }
+
+        num_descs = seg_len / sizeof(AccelSglDesc);
+        descs = g_malloc(seg_len);
+
+        status = accel_dma_read_safe(n, seg_addr, descs, seg_len);
+        if (status != ACCEL_SC_SUCCESS) {
+            g_free(descs);
+            return status;
+        }
+
+        more_segments = false;
+
+        for (uint32_t i = 0; i < num_descs && remaining > 0; i++) {
+            uint64_t d_addr = le64_to_cpu(descs[i].addr);
+            uint32_t d_len = le32_to_cpu(descs[i].length);
+            uint8_t d_type = le32_to_cpu(descs[i].type) & 0xFF;
+
+            if (d_type == ACCEL_SGL_DESC_DATA_BLOCK) {
+                uint32_t chunk = MIN(d_len, remaining);
+                if (is_write) {
+                    status = accel_dma_write_safe(n, d_addr, p, chunk);
+                } else {
+                    status = accel_dma_read_safe(n, d_addr, p, chunk);
+                }
+                if (status != ACCEL_SC_SUCCESS) {
+                    g_free(descs);
+                    return status;
+                }
+                p += chunk;
+                remaining -= chunk;
+
+            } else if ((d_type == ACCEL_SGL_DESC_SEGMENT ||
+                        d_type == ACCEL_SGL_DESC_LAST_SEGMENT) &&
+                       i == num_descs - 1) {
+                /* Chain pointer: must be last entry in segment */
+                seg_addr = d_addr;
+                seg_len = d_len;
+                more_segments = true;
+
+            } else {
+                g_free(descs);
+                return ACCEL_SC_INVALID_FIELD;
+            }
+        }
+
+        g_free(descs);
+    }
+
+    return ACCEL_SC_SUCCESS;
+}
+
+/**
+ * accel_host_dma_transfer - Scatter-gather DMA transfer to/from host
+ * @n: Device state
+ * @cmd: Command (contains DBD with host buffer descriptors)
+ * @buf: Device-side contiguous buffer
+ * @length: Transfer length in bytes
+ * @is_write: true = device writes to host, false = device reads from host
+ *
+ * Decodes the Data Block Descriptor and performs the DMA transfer.
+ * Supports:
+ *   PRPL: PRP list (single entry, two entries, or PRP list via prp2)
+ *   SGL:  Scatter-gather (Data Block, Segment chain, Last Segment)
+ *   SVA:  Single virtual address (direct contiguous transfer)
+ *
+ * Returns: ACCEL_SC_SUCCESS or error status code
+ */
+static uint16_t accel_host_dma_transfer(PCIeAccel *n, AccelCmd *cmd,
+                                         void *buf, uint32_t length,
+                                         bool is_write)
+{
+    uint8_t dbd_type = cmd->flags & ACCEL_CMD_FLAGS_DBD_MASK;
+
+    switch (dbd_type) {
+    case ACCEL_CMD_FLAGS_DBD_PRPL: {
+        uint64_t prp1 = le64_to_cpu(cmd->dbd.prpl.prp1);
+        uint64_t prp2 = le64_to_cpu(cmd->dbd.prpl.prp2);
+        return accel_prp_transfer(n, prp1, prp2, buf, length, is_write);
+    }
+
+    case ACCEL_CMD_FLAGS_DBD_SGL: {
+        uint64_t addr = le64_to_cpu(cmd->dbd.sgl.addr);
+        uint32_t sgl_len = le32_to_cpu(cmd->dbd.sgl.length);
+        uint32_t sgl_type = le32_to_cpu(cmd->dbd.sgl.type);
+        return accel_sgl_transfer(n, addr, sgl_len, sgl_type,
+                                   buf, length, is_write);
+    }
+
+    case ACCEL_CMD_FLAGS_DBD_SVA: {
+        uint64_t addr = le64_to_cpu(cmd->dbd.sva.addr);
+        if (is_write) {
+            return accel_dma_write_safe(n, addr, buf, length);
+        } else {
+            return accel_dma_read_safe(n, addr, buf, length);
+        }
+    }
+
+    default:
+        return ACCEL_SC_INVALID_FIELD;
+    }
+}
+
+/**
  * accel_cmd_mem_read - Read from device memory to host
  * @n: Device state
  * @req: Request structure
  *
  * Reads data from device memory (CMB or DPA) and DMA writes to host.
- *
- * Command fields (from cmd->mem_read):
- * - dev_addr:   Device physical address (source)
- * - host_addr:  Host buffer DMA address (destination)
- * - length:     Transfer length in bytes
+ * Host buffer is decoded from the DBD union (NVMe-style):
+ *   PRPL: addr=prp1, length from command
+ *   SGL:  addr and length from SGL descriptor
+ *   SVA:  addr=sva.addr, pasid=sva.pasid, length from command
  *
  * Returns: Status code
  */
@@ -565,16 +864,21 @@ uint16_t accel_cmd_mem_read(PCIeAccel *n, AccelRequest *req)
 {
     AccelCmd *cmd = &req->cmd;
     uint64_t dev_addr = le64_to_cpu(cmd->mem_read.dev_addr);
-    uint64_t host_addr = le64_to_cpu(cmd->mem_read.host_addr);
     uint32_t length = le32_to_cpu(cmd->mem_read.length);
     uint16_t status;
     void *dev_ptr;
     void *buf;
 
+    status = accel_resolve_xfer_length(cmd, &length);
+    if (status != ACCEL_SC_SUCCESS) {
+        return status;
+    }
+
     qemu_log_mask(LOG_UNIMP,
                   "pcie-accel: MEM_READ: dev_addr=0x%" PRIx64
-                  " host_addr=0x%" PRIx64 " length=%u\n",
-                  dev_addr, host_addr, length);
+                  " length=%u dbd_type=%u\n",
+                  dev_addr, length,
+                  cmd->flags & ACCEL_CMD_FLAGS_DBD_MASK);
 
     if (length == 0 || length > (1 * MiB)) {
         return ACCEL_SC_INVALID_FIELD;
@@ -591,7 +895,7 @@ uint16_t accel_cmd_mem_read(PCIeAccel *n, AccelRequest *req)
     buf = g_malloc(length);
     memcpy(buf, dev_ptr, length);
 
-    status = accel_dma_write_safe(n, host_addr, buf, length);
+    status = accel_host_dma_transfer(n, cmd, buf, length, true);
     g_free(buf);
 
     if (status == ACCEL_SC_SUCCESS) {
@@ -607,11 +911,10 @@ uint16_t accel_cmd_mem_read(PCIeAccel *n, AccelRequest *req)
  * @req: Request structure
  *
  * DMA reads from host memory and writes to device memory (CMB or DPA).
- *
- * Command fields (from cmd->mem_write):
- * - dev_addr:   Device physical address (destination)
- * - host_addr:  Host buffer DMA address (source)
- * - length:     Transfer length in bytes
+ * Host buffer is decoded from the DBD union (NVMe-style):
+ *   PRPL: addr=prp1, length from command
+ *   SGL:  addr and length from SGL descriptor
+ *   SVA:  addr=sva.addr, pasid=sva.pasid, length from command
  *
  * Returns: Status code
  */
@@ -619,16 +922,21 @@ uint16_t accel_cmd_mem_write(PCIeAccel *n, AccelRequest *req)
 {
     AccelCmd *cmd = &req->cmd;
     uint64_t dev_addr = le64_to_cpu(cmd->mem_write.dev_addr);
-    uint64_t host_addr = le64_to_cpu(cmd->mem_write.host_addr);
     uint32_t length = le32_to_cpu(cmd->mem_write.length);
     uint16_t status;
     void *dev_ptr;
     void *buf;
 
+    status = accel_resolve_xfer_length(cmd, &length);
+    if (status != ACCEL_SC_SUCCESS) {
+        return status;
+    }
+
     qemu_log_mask(LOG_UNIMP,
                   "pcie-accel: MEM_WRITE: dev_addr=0x%" PRIx64
-                  " host_addr=0x%" PRIx64 " length=%u\n",
-                  dev_addr, host_addr, length);
+                  " length=%u dbd_type=%u\n",
+                  dev_addr, length,
+                  cmd->flags & ACCEL_CMD_FLAGS_DBD_MASK);
 
     if (length == 0 || length > (1 * MiB)) {
         return ACCEL_SC_INVALID_FIELD;
@@ -644,7 +952,7 @@ uint16_t accel_cmd_mem_write(PCIeAccel *n, AccelRequest *req)
 
     buf = g_malloc(length);
 
-    status = accel_dma_read_safe(n, host_addr, buf, length);
+    status = accel_host_dma_transfer(n, cmd, buf, length, false);
     if (status != ACCEL_SC_SUCCESS) {
         g_free(buf);
         return status;
