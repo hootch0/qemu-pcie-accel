@@ -431,13 +431,6 @@
 #define ACCEL_CMB_SIZE          (32 * 1024 * 1024)   /* 16MB - Controller Memory Buffer (BAR2) */
 #define ACCEL_BAR4_SIZE         (16 * 1024)         /* 16KB - MSI-X table/PBA */
 
-/* ===== Device Physical Address (DPA) Memory ===== */
-/*
- * Internal device memory accessible only via MEM_READ/MEM_WRITE commands.
- * Not BAR-mapped. DPA base starts after CMB in the device address space.
- */
-#define ACCEL_DPA_BASE          ACCEL_CMB_SIZE      /* DPA starts after CMB */
-
 /* MSI-X table/PBA offsets within BAR4 */
 #define ACCEL_MSIX_TABLE_OFFSET     0x0000  /* MSI-X table at BAR4 offset 0 */
 #define ACCEL_MSIX_PBA_OFFSET       0x1000  /* MSI-X PBA at BAR4 offset 4KB */

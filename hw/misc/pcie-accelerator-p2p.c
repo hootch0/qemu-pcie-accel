@@ -99,17 +99,21 @@ int accel_register_p2p_peer(PCIeAccel *n, uint16_t bdf, PCIDevice *pdev)
     peer->active_xfers = 0;
 
     /*
-     * Get peer's CMB memory region for P2P transfers.
-     * The peer device must be another pcie-accelerator with CMB initialized.
+     * Get peer's memory regions.
+     * CMB is used for ring buffers (MMIO).
+     * DPA is the target for P2P commands (separate address space).
      */
     if (object_dynamic_cast(OBJECT(pdev), TYPE_PCIE_ACCEL)) {
         PCIeAccel *peer_accel = PCIE_ACCEL(pdev);
         peer->cmb = &peer_accel->cmb;
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "pcie-accel: P2P peer 0x%x has CMB (%lu bytes)\n",
-                      bdf, (unsigned long)memory_region_size(peer->cmb));
+        peer->dpa_mr = peer_accel->dpa_mr;
+        qemu_log_mask(LOG_UNIMP,
+                      "pcie-accel: P2P peer 0x%x: CMB %lu bytes, DPA %s\n",
+                      bdf, (unsigned long)memory_region_size(peer->cmb),
+                      peer->dpa_mr ? "present" : "none");
     } else {
         peer->cmb = NULL;
+        peer->dpa_mr = NULL;
         qemu_log_mask(LOG_GUEST_ERROR,
                       "pcie-accel: P2P peer 0x%x is not a pcie-accelerator device\n",
                       bdf);
@@ -233,7 +237,7 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
     uint16_t status = ACCEL_SC_SUCCESS;
     void *bounce_buf = NULL;
     void *peer_ram;
-    uint64_t cmb_size;
+    uint64_t dpa_size;
 
     /* Lookup peer device */
     peer = accel_find_p2p_peer(n, peer_bdf);
@@ -243,10 +247,10 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
         return ACCEL_SC_P2P_PEER_NOT_FOUND;
     }
 
-    /* Check that peer has CMB memory */
-    if (!peer->cmb) {
+    /* Check that peer has DPA memory (P2P target address space) */
+    if (!peer->dpa_mr) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "pcie-accel: P2P peer 0x%x has no CMB\n",
+                      "pcie-accel: P2P peer 0x%x has no DPA memory\n",
                       peer_bdf);
         return ACCEL_SC_P2P_PEER_INVALID;
     }
@@ -260,19 +264,19 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
         return ACCEL_SC_P2P_MAX_XFERS;
     }
 
-    /* Get peer's CMB RAM pointer and validate address range */
-    cmb_size = memory_region_size(peer->cmb);
-    if (peer_addr + total_len > cmb_size) {
+    /* Get peer's DPA RAM pointer and validate address range */
+    dpa_size = memory_region_size(peer->dpa_mr);
+    if (peer_addr + total_len > dpa_size) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "pcie-accel: P2P address 0x%" PRIx64 " + len %u exceeds "
-                      "CMB size %" PRIu64 "\n", peer_addr, total_len, cmb_size);
+                      "pcie-accel: P2P DPA addr 0x%" PRIx64 " + len %u exceeds "
+                      "DPA size %" PRIu64 "\n", peer_addr, total_len, dpa_size);
         return ACCEL_SC_INVALID_PRP;
     }
 
-    peer_ram = memory_region_get_ram_ptr(peer->cmb);
+    peer_ram = memory_region_get_ram_ptr(peer->dpa_mr);
     if (!peer_ram) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "pcie-accel: P2P peer 0x%x CMB is not RAM-backed\n",
+                      "pcie-accel: P2P peer 0x%x DPA is not RAM-backed\n",
                       peer_bdf);
         return ACCEL_SC_P2P_PEER_INVALID;
     }
@@ -295,23 +299,23 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
 
     qemu_log_mask(LOG_UNIMP,
                   "pcie-accel: P2P %s START: peer=0x%x host_addr=0x%" PRIx64
-                  " peer_addr=0x%" PRIx64 " len=%u cmb_size=%" PRIu64 "\n",
+                  " peer_dpa=0x%" PRIx64 " len=%u dpa_size=%" PRIu64 "\n",
                   is_write ? "WRITE" : "READ", peer_bdf, host_addr,
-                  peer_addr, total_len, cmb_size);
+                  peer_addr, total_len, dpa_size);
 
     /*
      * Transfer loop: Process data in chunks
-     * For writes: Read from host -> Write to peer CMB
-     * For reads:  Read from peer CMB -> Write to host
+     * For writes: Read from host -> Write to peer DPA
+     * For reads:  Read from peer DPA -> Write to host
      *
-     * peer_addr is an offset within peer's CMB memory.
+     * peer_addr is a DPA offset within peer's device memory.
      */
     while (offset < total_len && status == ACCEL_SC_SUCCESS) {
         uint32_t xfer_len = MIN(chunk_size, total_len - offset);
         MemTxResult result;
 
         if (is_write) {
-            /* P2P Write: Host memory -> Peer CMB */
+            /* P2P Write: Host memory -> Peer DPA */
 
             /* Read from host memory (via this device's DMA) */
             result = pci_dma_read(pci, host_addr + offset, bounce_buf, xfer_len);
@@ -324,17 +328,17 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
                 break;
             }
 
-            /* Write directly to peer's CMB RAM */
+            /* Write directly to peer's DPA RAM */
             memcpy((uint8_t *)peer_ram + peer_addr + offset, bounce_buf, xfer_len);
-            qemu_log_mask(LOG_GUEST_ERROR,
+            qemu_log_mask(LOG_UNIMP,
                           "pcie-accel: P2P write chunk: host 0x%" PRIx64
-                          " -> peer_ram+0x%" PRIx64 " len %u OK\n",
+                          " -> peer_dpa+0x%" PRIx64 " len %u OK\n",
                           host_addr + offset, peer_addr + offset, xfer_len);
 
         } else {
-            /* P2P Read: Peer CMB -> Host memory */
+            /* P2P Read: Peer DPA -> Host memory */
 
-            /* Read directly from peer's CMB RAM */
+            /* Read directly from peer's DPA RAM */
             memcpy(bounce_buf, (uint8_t *)peer_ram + peer_addr + offset, xfer_len);
 
             /* Write to host memory (via this device's DMA) */
@@ -347,8 +351,8 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
                 status = ACCEL_SC_DMA_ERROR;
                 break;
             }
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "pcie-accel: P2P read chunk: peer_ram+0x%" PRIx64
+            qemu_log_mask(LOG_UNIMP,
+                          "pcie-accel: P2P read chunk: peer_dpa+0x%" PRIx64
                           " -> host 0x%" PRIx64 " len %u OK\n",
                           peer_addr + offset, host_addr + offset, xfer_len);
         }
@@ -387,12 +391,12 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
  * @n: Device state
  * @req: Request structure
  *
- * Transfers data from host memory (attached to this device) to peer device memory.
+ * Transfers data from host memory (attached to this device) to peer DPA memory.
  *
  * Command parameters:
  * - prp1: Source address in host memory
  * - dw.p2p.peer_bdf: Target peer device BDF
- * - dw.p2p.peer_addr: Target address in peer device
+ * - dw.p2p.peer_addr: Target DPA address in peer device
  * - dw.p2p.length: Transfer length in bytes
  * - dw.p2p.pasid: PASID (if PASID flag set)
  *
@@ -408,12 +412,12 @@ uint16_t accel_cmd_p2p_write(PCIeAccel *n, AccelRequest *req)
  * @n: Device state
  * @req: Request structure
  *
- * Transfers data from peer device memory to host memory (attached to this device).
+ * Transfers data from peer DPA memory to host memory (attached to this device).
  *
  * Command parameters:
  * - prp1: Destination address in host memory
  * - dw.p2p.peer_bdf: Source peer device BDF
- * - dw.p2p.peer_addr: Source address in peer device
+ * - dw.p2p.peer_addr: Source DPA address in peer device
  * - dw.p2p.length: Transfer length in bytes
  * - dw.p2p.pasid: PASID (if PASID flag set)
  *

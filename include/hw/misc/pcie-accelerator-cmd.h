@@ -256,12 +256,21 @@ typedef union QEMU_PACKED AccelCmd {
         uint32_t reserved2[14];
     } delete_ioq;
 
+    /*
+     * ===== Device Physical Address (DPA) Memory =====
+     *
+     * DPA is a separate address space from MMIO/CMB — never exposed on
+     * any BAR.  Accessible only via MEM_READ/MEM_WRITE commands and as
+     * the P2P peer_addr target.  Addresses start at 0 and extend to the
+     * backend memory size.
+     */
+
     /* Memory Read command (opcode 0x05) */
     struct QEMU_PACKED {
         uint8_t  opcode;
         uint8_t  flags;
         uint16_t cid;
-        uint64_t dev_addr;         /* Device memory address (CMB offset) */
+        uint64_t dev_addr;         /* DPA offset in device memory */
         uint64_t host_addr;        /* Host buffer address (PRP1) */
         uint64_t reserved0;
         uint32_t length;           /* Transfer length in bytes */
@@ -273,7 +282,7 @@ typedef union QEMU_PACKED AccelCmd {
         uint8_t  opcode;
         uint8_t  flags;
         uint16_t cid;
-        uint64_t dev_addr;         /* Device memory address (CMB offset) */
+        uint64_t dev_addr;         /* DPA offset in device memory */
         uint64_t host_addr;        /* Host buffer address (PRP1) */
         uint64_t reserved0;
         uint32_t length;           /* Transfer length in bytes */

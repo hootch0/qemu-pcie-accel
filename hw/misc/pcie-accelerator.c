@@ -517,30 +517,23 @@ uint16_t accel_cmd_loopback(PCIeAccel *n, AccelRequest *req)
 }
 
 /**
- * accel_resolve_dev_addr - Resolve device address to RAM pointer
+ * accel_resolve_dev_addr - Resolve DPA address to RAM pointer
  * @n: Device state
- * @dev_addr: Device physical address
+ * @dev_addr: Device Physical Address (offset into DPA memory)
  * @length: Access length in bytes
  *
- * Maps a device physical address to the backing RAM pointer.
- * Address ranges:
- *   [0, ACCEL_CMB_SIZE)                          -> CMB (BAR2)
- *   [ACCEL_DPA_BASE, ACCEL_DPA_BASE + dpa_size)  -> DPA (internal)
+ * Maps a DPA address to the backing RAM pointer.  DPA is a separate
+ * address space from MMIO/CMB — addresses start at 0.
  *
  * Returns: RAM pointer on success, NULL if address out of range
  */
 static void *accel_resolve_dev_addr(PCIeAccel *n, uint64_t dev_addr,
                                     uint32_t length)
 {
-    if (dev_addr + length <= ACCEL_CMB_SIZE) {
-        return (uint8_t *)memory_region_get_ram_ptr(&n->cmb) + dev_addr;
-    }
-
-    if (n->dpa_mr && dev_addr >= ACCEL_DPA_BASE) {
+    if (n->dpa_mr) {
         uint64_t dpa_size = memory_region_size(n->dpa_mr);
-        uint64_t offset = dev_addr - ACCEL_DPA_BASE;
-        if (offset + length <= dpa_size) {
-            return (uint8_t *)memory_region_get_ram_ptr(n->dpa_mr) + offset;
+        if (dev_addr + length <= dpa_size) {
+            return (uint8_t *)memory_region_get_ram_ptr(n->dpa_mr) + dev_addr;
         }
     }
 
@@ -924,7 +917,7 @@ static void accel_log_data_dump(const char *tag, const void *buf,
  * @n: Device state
  * @req: Request structure
  *
- * Reads data from device memory (CMB or DPA) and DMA writes to host.
+ * Reads data from DPA memory and DMA writes to host.
  * Host buffer is decoded from the DBD union (NVMe-style):
  *   PRPL: addr=prp1, length from command
  *   SGL:  addr and length from SGL descriptor
@@ -987,7 +980,7 @@ uint16_t accel_cmd_mem_read(PCIeAccel *n, AccelRequest *req)
  * @n: Device state
  * @req: Request structure
  *
- * DMA reads from host memory and writes to device memory (CMB or DPA).
+ * DMA reads from host memory and writes to DPA memory.
  * Host buffer is decoded from the DBD union (NVMe-style):
  *   PRPL: addr=prp1, length from command
  *   SGL:  addr and length from SGL descriptor
@@ -1129,7 +1122,7 @@ uint16_t accel_cmd_identify(PCIeAccel *n, AccelRequest *req)
         uint64_t dpa_size = memory_region_size(n->dpa_mr);
         id.mem_regions[nr].desc = cpu_to_le64(
             ACCEL_MR_DESC(0, ACCEL_MR_TYPE_MEM, 0, dpa_size));
-        id.mem_regions[nr].addr = cpu_to_le64(ACCEL_DPA_BASE);
+        id.mem_regions[nr].addr = cpu_to_le64(0);
         nr++;
     }
 
