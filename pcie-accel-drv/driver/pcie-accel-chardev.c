@@ -28,6 +28,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/io_uring.h>
 #include <linux/io_uring/cmd.h>
+#include <linux/mm.h>
 
 #include "pcie-accel.h"
 
@@ -83,6 +84,202 @@ static int accel_release(struct inode *inode, struct file *file)
  * The command data is parsed and dispatched to the appropriate handler.
  */
 
+/*
+ * ===== Scatter-Gather DMA Helpers =====
+ *
+ * NVMe-style scatter-gather: pin user pages, DMA-map each page, then
+ * build either a PRP list (flags=0x00) or SGL descriptor array (flags=0x01).
+ * DMA goes directly to/from user pages — no bounce buffer needed.
+ */
+
+/**
+ * accel_setup_user_pages - Pin user pages and DMA-map them
+ * @dev: Device structure
+ * @user_addr: User virtual address of buffer
+ * @data_len: Transfer length in bytes
+ * @is_write: true if device writes to host (host receives data)
+ * @sg: Output scatter-gather state
+ *
+ * Returns: 0 on success, negative errno on failure
+ */
+static int accel_setup_user_pages(struct accel_dev *dev, u64 user_addr,
+				  size_t data_len, bool is_write,
+				  struct accel_sg_state *sg)
+{
+	unsigned long start = user_addr & PAGE_MASK;
+	unsigned int offset = user_addr & ~PAGE_MASK;
+	int nr_pages = DIV_ROUND_UP(offset + data_len, PAGE_SIZE);
+	unsigned int gup_flags = is_write ? FOLL_WRITE : 0;
+	int i, pinned;
+
+	memset(sg, 0, sizeof(*sg));
+
+	sg->pages = kvmalloc_array(nr_pages, sizeof(struct page *), GFP_KERNEL);
+	if (!sg->pages)
+		return -ENOMEM;
+
+	sg->dma_addrs = kvmalloc_array(nr_pages, sizeof(dma_addr_t), GFP_KERNEL);
+	if (!sg->dma_addrs) {
+		kvfree(sg->pages);
+		sg->pages = NULL;
+		return -ENOMEM;
+	}
+
+	pinned = pin_user_pages_fast(start, nr_pages, gup_flags, sg->pages);
+	if (pinned < nr_pages) {
+		if (pinned > 0)
+			unpin_user_pages(sg->pages, pinned);
+		kvfree(sg->dma_addrs);
+		kvfree(sg->pages);
+		sg->pages = NULL;
+		sg->dma_addrs = NULL;
+		return -EFAULT;
+	}
+
+	sg->nr_pages = nr_pages;
+	sg->first_offset = offset;
+	sg->total_len = data_len;
+	sg->dir = is_write ? DMA_FROM_DEVICE : DMA_TO_DEVICE;
+
+	/* DMA-map each page */
+	for (i = 0; i < nr_pages; i++) {
+		unsigned int pg_off = (i == 0) ? offset : 0;
+		unsigned int pg_len;
+
+		if (i == 0)
+			pg_len = min_t(size_t, PAGE_SIZE - offset, data_len);
+		else if (i == nr_pages - 1)
+			pg_len = (offset + data_len - 1) % PAGE_SIZE + 1;
+		else
+			pg_len = PAGE_SIZE;
+
+		sg->dma_addrs[i] = dma_map_page(&dev->pdev->dev, sg->pages[i],
+						  pg_off, pg_len, sg->dir);
+		if (dma_mapping_error(&dev->pdev->dev, sg->dma_addrs[i])) {
+			/* Unmap previously mapped pages */
+			while (--i >= 0) {
+				unsigned int undo_off = (i == 0) ? offset : 0;
+				unsigned int undo_len;
+
+				if (i == 0)
+					undo_len = min_t(size_t, PAGE_SIZE - offset, data_len);
+				else
+					undo_len = PAGE_SIZE;
+				dma_unmap_page(&dev->pdev->dev, sg->dma_addrs[i],
+					       undo_len, sg->dir);
+			}
+			unpin_user_pages(sg->pages, nr_pages);
+			kvfree(sg->dma_addrs);
+			kvfree(sg->pages);
+			sg->pages = NULL;
+			sg->dma_addrs = NULL;
+			sg->nr_pages = 0;
+			return -EIO;
+		}
+	}
+
+	return 0;
+}
+
+/**
+ * accel_setup_prp - Build NVMe-style PRP list from pinned pages
+ * @dev: Device structure
+ * @cmd: Command to modify (sets dbd.prpl.prp1 and prp2)
+ * @sg: Scatter-gather state (pages must be pinned and DMA-mapped)
+ *
+ * NVMe PRP semantics:
+ * - 1 page:  prp1 = page DMA addr + offset, prp2 = 0
+ * - 2 pages: prp1 = page[0], prp2 = page[1] DMA addr
+ * - >2 pages: prp1 = page[0], prp2 = PRP list DMA addr
+ *   PRP list is a DMA buffer containing page[1..N] DMA addresses.
+ *
+ * Returns: 0 on success, negative errno on failure
+ */
+static int accel_setup_prp(struct accel_dev *dev, union accel_cmd *cmd,
+			   struct accel_sg_state *sg)
+{
+	/* PRP1 = first page DMA addr (includes sub-page offset) */
+	cmd->dbd.prpl.prp1 = cpu_to_le64(sg->dma_addrs[0]);
+
+	if (sg->nr_pages == 1) {
+		cmd->dbd.prpl.prp2 = 0;
+		return 0;
+	}
+
+	if (sg->nr_pages == 2) {
+		cmd->dbd.prpl.prp2 = cpu_to_le64(sg->dma_addrs[1]);
+		return 0;
+	}
+
+	/* >2 pages: allocate PRP list buffer containing page[1..N] addrs */
+	sg->prp_list = dma_alloc_coherent(&dev->pdev->dev, PAGE_SIZE,
+					   &sg->prp_list_dma, GFP_ATOMIC);
+	if (!sg->prp_list)
+		return -ENOMEM;
+
+	{
+		int i;
+		for (i = 1; i < sg->nr_pages; i++)
+			sg->prp_list[i - 1] = cpu_to_le64(sg->dma_addrs[i]);
+	}
+
+	cmd->dbd.prpl.prp2 = cpu_to_le64(sg->prp_list_dma);
+	return 0;
+}
+
+/**
+ * accel_setup_sgl - Build NVMe-style SGL Last Segment from pinned pages
+ * @dev: Device structure
+ * @cmd: Command to modify (sets flags and dbd.sgl)
+ * @sg: Scatter-gather state (pages must be pinned and DMA-mapped)
+ *
+ * Builds a single SGL Last Segment descriptor array with one Data Block
+ * descriptor per pinned page. Sets command flags to SGL mode.
+ *
+ * Returns: 0 on success, negative errno on failure
+ */
+static int accel_setup_sgl(struct accel_dev *dev, union accel_cmd *cmd,
+			   struct accel_sg_state *sg)
+{
+	size_t desc_size = sg->nr_pages * sizeof(struct accel_sgl_desc);
+	int i;
+
+	sg->sgl_descs_size = desc_size;
+	sg->sgl_descs = dma_alloc_coherent(&dev->pdev->dev, desc_size,
+					    &sg->sgl_descs_dma, GFP_ATOMIC);
+	if (!sg->sgl_descs)
+		return -ENOMEM;
+
+	/* Fill one Data Block descriptor per page */
+	for (i = 0; i < sg->nr_pages; i++) {
+		unsigned int pg_len;
+
+		if (i == 0)
+			pg_len = min_t(size_t, PAGE_SIZE - sg->first_offset,
+				       sg->total_len);
+		else if (i == sg->nr_pages - 1)
+			pg_len = (sg->first_offset + sg->total_len - 1) %
+				 PAGE_SIZE + 1;
+		else
+			pg_len = PAGE_SIZE;
+
+		sg->sgl_descs[i].addr = cpu_to_le64(sg->dma_addrs[i]);
+		sg->sgl_descs[i].length = cpu_to_le32(pg_len);
+		memset(sg->sgl_descs[i].reserved, 0, 3);
+		sg->sgl_descs[i].type = ACCEL_SGL_DESC_DATA_BLOCK;
+	}
+
+	/* Set command to SGL mode: Last Segment pointing to descriptor array */
+	cmd->flags = (cmd->flags & ~ACCEL_CMD_FLAGS_DBD_MASK) |
+		     ACCEL_CMD_FLAGS_DBD_SGL;
+	cmd->dbd.sgl.addr = cpu_to_le64(sg->sgl_descs_dma);
+	cmd->dbd.sgl.length = cpu_to_le32(desc_size);
+	memset(cmd->dbd.sgl.reserved, 0, 3);
+	cmd->dbd.sgl.type = ACCEL_SGL_DESC_LAST_SEGMENT;
+
+	return 0;
+}
+
 /**
  * accel_uring_cmd_submit - Handle ACCEL_URING_CMD_SUBMIT
  * @ioucmd: io_uring command context
@@ -102,11 +299,13 @@ static int accel_uring_cmd_submit(struct io_uring_cmd *ioucmd,
 {
 	struct accel_queue *queue;
 	union accel_cmd cmd;
-	dma_addr_t data_dma = 0;
-	void *data_buf = NULL;
-	void __user *user_buf = NULL;
+	struct accel_sg_state sg;
+	bool has_sg = false;
 	size_t data_len = 0;
+	u64 user_addr = 0;
 	u16 qid = ucmd->qid;
+	u8 dbd_type;
+	bool is_host_write;  /* true = device writes to host (read op) */
 	int ret;
 
 	/* Validate queue ID */
@@ -122,110 +321,81 @@ static int accel_uring_cmd_submit(struct io_uring_cmd *ioucmd,
 
 	/*
 	 * Determine data buffer requirements based on command opcode.
-	 * Different commands have different data layouts.
 	 */
 	switch (cmd.opcode) {
 	case ACCEL_CMD_LOOPBACK:
 		data_len = le32_to_cpu(cmd.dw.loopback.length);
-		dev_dbg(&dev->pdev->dev, "SUBMIT: LOOPBACK qid=%u len=%zu\n",
-			qid, data_len);
 		break;
 	case ACCEL_CMD_P2P_WRITE:
 	case ACCEL_CMD_P2P_READ:
 		data_len = le32_to_cpu(cmd.dw.p2p.length);
-		dev_dbg(&dev->pdev->dev,
-			"SUBMIT: P2P_%s qid=%u peer_bdf=0x%x peer_addr=0x%llx "
-			"prp1=0x%llx len=%zu\n",
-			cmd.opcode == ACCEL_CMD_P2P_WRITE ? "WRITE" : "READ",
-			qid, le32_to_cpu(cmd.dw.p2p.peer_bdf),
-			le64_to_cpu(cmd.dw.p2p.peer_addr),
-			le64_to_cpu(cmd.dbd.prpl.prp1), data_len);
 		break;
 	case ACCEL_CMD_MEM_READ:
 	case ACCEL_CMD_MEM_WRITE:
 		data_len = le32_to_cpu(cmd.mem_write.length);
-		dev_dbg(&dev->pdev->dev,
-			"SUBMIT: MEM_%s qid=%u dev_addr=0x%llx "
-			"host_addr=0x%llx len=%zu\n",
-			cmd.opcode == ACCEL_CMD_MEM_WRITE ? "WRITE" : "READ",
-			qid, le64_to_cpu(cmd.mem_write.dev_addr),
-			le64_to_cpu(cmd.mem_write.host_addr), data_len);
 		break;
 	default:
-		/* No data buffer needed */
 		data_len = 0;
 		break;
 	}
 
-	/* Allocate DMA buffer if needed (limit to 16MB) */
+	/*
+	 * Set up scatter-gather DMA: pin user pages and build PRP/SGL
+	 * descriptors. No bounce buffer — DMA goes directly to user pages.
+	 */
 	if (data_len > 0 && data_len <= (16 * 1024 * 1024)) {
-		u64 user_addr = le64_to_cpu(cmd.dbd.prpl.prp1);
-
-		data_buf = dma_alloc_coherent(&dev->pdev->dev, data_len,
-					      &data_dma, GFP_ATOMIC);
-		if (!data_buf)
-			return -ENOMEM;
+		user_addr = le64_to_cpu(cmd.dbd.prpl.prp1);
+		if (!user_addr || !access_ok((void __user *)user_addr, data_len))
+			return -EFAULT;
 
 		/*
-		 * For write operations, copy data from user-provided address.
-		 * For read operations, save user address for copy back on completion.
+		 * For host-write ops (P2P_READ, MEM_READ, LOOPBACK),
+		 * device DMA-writes to user pages (FOLL_WRITE).
+		 * For host-read ops (P2P_WRITE, MEM_WRITE),
+		 * device DMA-reads from user pages.
 		 */
-		if (cmd.opcode == ACCEL_CMD_P2P_WRITE ||
-		    cmd.opcode == ACCEL_CMD_LOOPBACK ||
-		    cmd.opcode == ACCEL_CMD_MEM_WRITE) {
-			void __user *uptr = (void __user *)user_addr;
+		is_host_write = (cmd.opcode != ACCEL_CMD_P2P_WRITE &&
+				 cmd.opcode != ACCEL_CMD_MEM_WRITE);
 
-			/* Validate user address before copying */
-			if (!user_addr || !access_ok(uptr, data_len)) {
-				dma_free_coherent(&dev->pdev->dev, data_len,
-						  data_buf, data_dma);
-				return -EFAULT;
-			}
+		ret = accel_setup_user_pages(dev, user_addr, data_len,
+					     is_host_write, &sg);
+		if (ret)
+			return ret;
 
-			if (copy_from_user(data_buf, uptr, data_len)) {
-				dma_free_coherent(&dev->pdev->dev, data_len,
-						  data_buf, data_dma);
-				return -EFAULT;
-			}
-		} else if (cmd.opcode == ACCEL_CMD_P2P_READ ||
-			   cmd.opcode == ACCEL_CMD_MEM_READ) {
-			/* Save user buffer for copy back on completion */
-			if (!user_addr || !access_ok((void __user *)user_addr, data_len)) {
-				dma_free_coherent(&dev->pdev->dev, data_len,
-						  data_buf, data_dma);
-				return -EFAULT;
-			}
-			user_buf = (void __user *)user_addr;
+		has_sg = true;
+
+		/* Build PRP list or SGL descriptors based on DBD flags */
+		dbd_type = cmd.flags & ACCEL_CMD_FLAGS_DBD_MASK;
+		if (dbd_type == ACCEL_CMD_FLAGS_DBD_SGL)
+			ret = accel_setup_sgl(dev, &cmd, &sg);
+		else
+			ret = accel_setup_prp(dev, &cmd, &sg);
+
+		if (ret) {
+			accel_sg_cleanup(dev, &sg);
+			return ret;
 		}
 
-		/* Replace user address with DMA address */
-		cmd.dbd.prpl.prp1 = cpu_to_le64(data_dma);
-
 		dev_dbg(&dev->pdev->dev,
-			"SUBMIT: DMA buf=%p dma_addr=0x%llx len=%zu user_buf=%p\n",
-			data_buf, (u64)data_dma, data_len, user_buf);
+			"SUBMIT: SG opcode=0x%02x nr_pages=%d dbd=%s\n",
+			cmd.opcode, sg.nr_pages,
+			dbd_type == ACCEL_CMD_FLAGS_DBD_SGL ? "SGL" : "PRP");
 	}
 
 	/*
 	 * Submit command for async completion.
-	 * accel_submit_async_cmd() will track the request and deliver
-	 * completion via io_uring_cmd_done() when the device completes.
-	 * For read operations, user_buf is saved for copy back on completion.
+	 * Pass sg state — cleaned up by __accel_free_request() on completion.
 	 */
-	ret = accel_submit_async_cmd(queue, &cmd, ioucmd, data_buf,
-				     data_dma, data_len, user_buf);
+	ret = accel_submit_async_cmd(queue, &cmd, ioucmd,
+				     has_sg ? &sg : NULL,
+				     NULL, 0, 0, NULL);
 	if (ret) {
 		dev_err(&dev->pdev->dev,
 			"SUBMIT: accel_submit_async_cmd failed: %d\n", ret);
-		if (data_buf)
-			dma_free_coherent(&dev->pdev->dev, data_len,
-					  data_buf, data_dma);
+		if (has_sg)
+			accel_sg_cleanup(dev, &sg);
 		return ret;
 	}
-
-	dev_dbg(&dev->pdev->dev,
-		"SUBMIT: queued opcode=%u cid=%u to qid=%u\n",
-		cmd.opcode, le16_to_cpu(cmd.cid), qid);
 
 	/*
 	 * Return -EIOCBQUEUED to tell io_uring that the command is in
@@ -443,15 +613,21 @@ static long accel_ioctl_delete_queue(struct accel_dev *dev, unsigned long arg)
 
 /**
  * accel_ioctl_submit_cmd - Submit command IOCTL handler (synchronous)
+ *
+ * Uses scatter-gather DMA: pins user pages, builds PRP/SGL descriptors,
+ * submits synchronously, then cleans up on completion.
  */
 static long accel_ioctl_submit_cmd(struct accel_dev *dev, unsigned long arg)
 {
 	struct accel_uring_cmd ucmd;
 	struct accel_queue *queue;
 	struct accel_cqe cqe;
-	dma_addr_t data_dma = 0;
-	void *data_buf = NULL;
+	struct accel_sg_state sg;
+	bool has_sg = false;
 	u32 data_len;
+	u64 user_addr;
+	u8 dbd_type;
+	bool is_host_write;
 	int ret;
 
 	if (copy_from_user(&ucmd, (void __user *)arg, sizeof(ucmd)))
@@ -483,65 +659,41 @@ static long accel_ioctl_submit_cmd(struct accel_dev *dev, unsigned long arg)
 		break;
 	}
 
+	/* Set up scatter-gather DMA for data commands */
 	if (data_len > 0 && data_len <= (16 * 1024 * 1024)) {
-		data_buf = dma_alloc_coherent(&dev->pdev->dev, data_len,
-					      &data_dma, GFP_KERNEL);
-		if (!data_buf)
-			return -ENOMEM;
+		user_addr = le64_to_cpu(ucmd.submit.cmd.dbd.prpl.prp1);
+		if (!user_addr || !access_ok((void __user *)user_addr, data_len))
+			return -EFAULT;
 
-		/* Copy data for write operations */
-		if (ucmd.submit.cmd.opcode == ACCEL_CMD_P2P_WRITE ||
-		    ucmd.submit.cmd.opcode == ACCEL_CMD_LOOPBACK ||
-		    ucmd.submit.cmd.opcode == ACCEL_CMD_MEM_WRITE) {
-			u64 user_addr = le64_to_cpu(ucmd.submit.cmd.dbd.prpl.prp1);
-			if (copy_from_user(data_buf, (void __user *)user_addr,
-					   data_len)) {
-				ret = -EFAULT;
-				goto out_free;
-			}
+		is_host_write = (ucmd.submit.cmd.opcode != ACCEL_CMD_P2P_WRITE &&
+				 ucmd.submit.cmd.opcode != ACCEL_CMD_MEM_WRITE);
+
+		ret = accel_setup_user_pages(dev, user_addr, data_len,
+					     is_host_write, &sg);
+		if (ret)
+			return ret;
+
+		has_sg = true;
+
+		dbd_type = ucmd.submit.cmd.flags & ACCEL_CMD_FLAGS_DBD_MASK;
+		if (dbd_type == ACCEL_CMD_FLAGS_DBD_SGL)
+			ret = accel_setup_sgl(dev, &ucmd.submit.cmd, &sg);
+		else
+			ret = accel_setup_prp(dev, &ucmd.submit.cmd, &sg);
+
+		if (ret) {
+			accel_sg_cleanup(dev, &sg);
+			return ret;
 		}
-
-		ucmd.submit.cmd.dbd.prpl.prp1 = cpu_to_le64(data_dma);
 	}
 
 	/* Submit synchronously */
 	ret = accel_submit_sync_cmd(dev, ucmd.qid, &ucmd.submit.cmd, &cqe,
 				    ucmd.timeout_ms ? ucmd.timeout_ms : 5000);
 
-	if (ret)
-		goto out_free;
-
-	/* Copy back data for read operations */
-	if (data_buf && (ucmd.submit.cmd.opcode == ACCEL_CMD_P2P_READ ||
-			 ucmd.submit.cmd.opcode == ACCEL_CMD_LOOPBACK ||
-			 ucmd.submit.cmd.opcode == ACCEL_CMD_MEM_READ)) {
-		struct accel_uring_cmd orig;
-		void __user *uptr;
-
-		if (copy_from_user(&orig, (void __user *)arg, sizeof(orig))) {
-			ret = -EFAULT;
-			goto out_free;
-		}
-		u64 user_addr = le64_to_cpu(orig.submit.cmd.dbd.prpl.prp1);
-		uptr = (void __user *)user_addr;
-
-		/* Validate user address before copying */
-		if (!user_addr || !access_ok(uptr, data_len)) {
-			ret = -EFAULT;
-			goto out_free;
-		}
-
-		if (copy_to_user(uptr, data_buf, data_len)) {
-			ret = -EFAULT;
-			goto out_free;
-		}
-	}
-
-	ret = 0;
-
-out_free:
-	if (data_buf)
-		dma_free_coherent(&dev->pdev->dev, data_len, data_buf, data_dma);
+	/* Clean up scatter-gather state */
+	if (has_sg)
+		accel_sg_cleanup(dev, &sg);
 
 	return ret;
 }

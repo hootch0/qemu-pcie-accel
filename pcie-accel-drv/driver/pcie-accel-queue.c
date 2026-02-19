@@ -35,8 +35,63 @@
 
 #include "pcie-accel.h"
 
-/* Workqueue for deferred read completions (copy_to_user needs process context) */
+/* Workqueue for deferred read completions (legacy bounce buffer path) */
 static struct workqueue_struct *accel_completion_wq;
+
+/**
+ * accel_sg_cleanup - Release scatter-gather DMA resources
+ * @dev: Device structure
+ * @sg: Scatter-gather state to clean up
+ *
+ * Frees PRP list or SGL descriptor buffers, DMA-unmaps pages,
+ * unpins user pages, and frees the page/addr arrays.
+ */
+void accel_sg_cleanup(struct accel_dev *dev, struct accel_sg_state *sg)
+{
+	int i;
+
+	/* Free PRP list buffer */
+	if (sg->prp_list) {
+		dma_free_coherent(&dev->pdev->dev, PAGE_SIZE,
+				  sg->prp_list, sg->prp_list_dma);
+		sg->prp_list = NULL;
+	}
+
+	/* Free SGL descriptor buffer */
+	if (sg->sgl_descs) {
+		dma_free_coherent(&dev->pdev->dev, sg->sgl_descs_size,
+				  sg->sgl_descs, sg->sgl_descs_dma);
+		sg->sgl_descs = NULL;
+	}
+
+	/* DMA-unmap and unpin pages */
+	if (sg->pages && sg->dma_addrs) {
+		for (i = 0; i < sg->nr_pages; i++) {
+			unsigned int pg_off = (i == 0) ? sg->first_offset : 0;
+			unsigned int pg_len;
+
+			if (i == 0)
+				pg_len = min_t(size_t, PAGE_SIZE - sg->first_offset,
+					       sg->total_len);
+			else if (i == sg->nr_pages - 1)
+				pg_len = (sg->first_offset + sg->total_len - 1) %
+					 PAGE_SIZE + 1;
+			else
+				pg_len = PAGE_SIZE;
+
+			dma_unmap_page(&dev->pdev->dev, sg->dma_addrs[i],
+				       pg_len, sg->dir);
+		}
+		unpin_user_pages(sg->pages, sg->nr_pages);
+	}
+
+	kvfree(sg->dma_addrs);
+	kvfree(sg->pages);
+	sg->dma_addrs = NULL;
+	sg->pages = NULL;
+	sg->nr_pages = 0;
+}
+EXPORT_SYMBOL_GPL(accel_sg_cleanup);
 
 /*
  * Kernel 6.17+ compatibility:
@@ -258,7 +313,11 @@ static void __accel_free_request(struct accel_request *req, bool sync_timer)
 {
 	struct accel_dev *dev = req->queue->dev;
 
-	/* Free any associated DMA buffer */
+	/* Free scatter-gather DMA resources */
+	if (req->sg.nr_pages > 0)
+		accel_sg_cleanup(dev, &req->sg);
+
+	/* Free any associated legacy DMA buffer */
 	if (req->data_buf && req->data_len > 0) {
 		dma_free_coherent(&dev->pdev->dev, req->data_len,
 				  req->data_buf, req->data_dma);
@@ -506,10 +565,15 @@ static int accel_process_cq_threaded(struct accel_queue *queue)
 			}
 
 			/*
-			 * For read operations, defer completion to
-			 * workqueue so copy_to_user runs in process
-			 * context. Threaded IRQ context cannot safely
-			 * access user memory.
+			 * Legacy bounce buffer path: for read operations
+			 * that used dma_alloc_coherent, defer completion to
+			 * workqueue so copy_to_user runs in process context.
+			 *
+			 * Scatter-gather requests (req->sg.nr_pages > 0)
+			 * skip this — DMA went directly to user pages, so
+			 * no copy_to_user is needed. They have user_buf=NULL
+			 * and data_buf=NULL, falling through to the direct
+			 * io_uring_cmd_done() below.
 			 */
 			if (err == 0 && req->is_read && req->user_buf &&
 			    req->data_buf && req->data_len > 0) {
@@ -664,16 +728,16 @@ static int accel_submit_cmd(struct accel_queue *queue, union accel_cmd *cmd)
  * Returns: 0 on success, negative error on failure
  */
 int accel_submit_async_cmd(struct accel_queue *queue, union accel_cmd *cmd,
-			   struct io_uring_cmd *ioucmd, void *data_buf,
-			   dma_addr_t data_dma, size_t data_len,
-			   void __user *user_buf)
+			   struct io_uring_cmd *ioucmd,
+			   struct accel_sg_state *sg,
+			   void *data_buf, dma_addr_t data_dma,
+			   size_t data_len, void __user *user_buf)
 {
 	struct accel_dev *dev = queue->dev;
 	struct accel_request *req;
 	unsigned long flags;
 	u16 cid;
 	int ret;
-	u8 opcode = cmd->opcode;
 
 	/* Allocate request tracking structure */
 	req = accel_alloc_request(queue);
@@ -687,11 +751,24 @@ int accel_submit_async_cmd(struct accel_queue *queue, union accel_cmd *cmd,
 	/* Initialize request */
 	req->cid = cid;
 	req->ioucmd = ioucmd;
+
+	/* Transfer scatter-gather ownership to request (if provided) */
+	if (sg) {
+		req->sg = *sg;
+		/* Clear caller's copy so double-free won't happen */
+		memset(sg, 0, sizeof(*sg));
+	} else {
+		memset(&req->sg, 0, sizeof(req->sg));
+	}
+
+	/* Legacy bounce buffer state */
 	req->data_buf = data_buf;
 	req->data_dma = data_dma;
 	req->data_len = data_len;
 	req->user_buf = user_buf;
-	req->is_read = (opcode == ACCEL_CMD_P2P_READ);
+	req->is_read = (cmd->opcode == ACCEL_CMD_P2P_READ ||
+			cmd->opcode == ACCEL_CMD_MEM_READ ||
+			cmd->opcode == ACCEL_CMD_LOOPBACK);
 	req->mm = NULL;
 	if (req->is_read && req->user_buf) {
 		req->mm = current->mm;

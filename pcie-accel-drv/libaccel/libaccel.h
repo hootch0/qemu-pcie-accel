@@ -141,7 +141,7 @@ union accel_cmd {
         /* Data Block Descriptor (CDW3-6, 16 bytes) */
         union {
             struct { uint64_t prp1; uint64_t prp2; } prpl;
-            struct { uint64_t addr; uint32_t length; uint32_t type; } sgl;
+            struct { uint64_t addr; uint32_t length; uint8_t reserved[3]; uint8_t type; } sgl;
             struct { uint64_t addr; uint32_t pasid; uint32_t reserved; } sva;
         } dbd;
 

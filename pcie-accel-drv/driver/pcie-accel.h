@@ -142,7 +142,7 @@ union accel_cmd {
 		__le32	rsvd1;		/* Reserved */
 		union {
 			struct { __le64 prp1; __le64 prp2; } prpl;
-			struct { __le64 addr; __le32 length; __le32 type; } sgl;
+			struct { __le64 addr; __le32 length; __u8 reserved[3]; __u8 type; } sgl;
 			struct { __le64 addr; __le32 pasid; __le32 reserved; } sva;
 		} dbd;
 		__le32	data_xfer_size;
@@ -351,6 +351,38 @@ struct accel_uring_result {
 	__u16	dev_status;	/* Device status code */
 };
 
+/* SGL descriptor (must match device-side AccelSglDesc, 16 bytes) */
+struct accel_sgl_desc {
+	__le64 addr;
+	__le32 length;
+	__u8   reserved[3];
+	__u8   type;
+} __packed;
+
+/**
+ * struct accel_sg_state - Per-request scatter-gather DMA state
+ *
+ * Holds pinned user pages and DMA mappings for NVMe-style
+ * PRP list or SGL descriptor-based transfers.
+ */
+struct accel_sg_state {
+	struct page **pages;			/* Pinned user pages */
+	dma_addr_t  *dma_addrs;		/* Per-page DMA addresses */
+	int          nr_pages;			/* Number of pinned pages */
+	enum dma_data_direction dir;		/* DMA direction */
+	unsigned int first_offset;		/* Sub-page offset in first page */
+	size_t       total_len;			/* Total transfer length */
+
+	/* PRP mode: PRP list buffer (for >2 pages) */
+	__le64       *prp_list;			/* DMA buffer: array of page addrs */
+	dma_addr_t    prp_list_dma;		/* DMA address of PRP list */
+
+	/* SGL mode: descriptor array buffer */
+	struct accel_sgl_desc *sgl_descs;	/* DMA buffer: SGL descriptors */
+	dma_addr_t    sgl_descs_dma;		/* DMA address of descriptor array */
+	size_t        sgl_descs_size;		/* Size of descriptor buffer */
+};
+
 /**
  * struct accel_request - In-flight request tracking
  *
@@ -367,12 +399,15 @@ struct accel_request {
 	union accel_cmd cmd;			/* Copy of command */
 	struct accel_cqe cqe;			/* Completion entry */
 
-	/* DMA resources */
+	/* Scatter-gather DMA state (pinned pages + PRP/SGL descriptors) */
+	struct accel_sg_state sg;
+
+	/* Legacy DMA resources (admin commands that need bounce buffers) */
 	void *data_buf;				/* DMA buffer */
 	dma_addr_t data_dma;			/* DMA address */
 	size_t data_len;			/* Buffer length */
 
-	/* User buffer for read operations (copy back on completion) */
+	/* User buffer for read operations (legacy bounce buffer path) */
 	void __user *user_buf;			/* Original user address */
 	bool is_read;				/* True if read operation */
 
@@ -536,9 +571,11 @@ int accel_submit_sync_cmd(struct accel_dev *dev, u16 qid,
 int accel_submit_admin_cmd(struct accel_dev *dev, union accel_cmd *cmd,
 			   struct accel_cqe *cqe);
 int accel_submit_async_cmd(struct accel_queue *queue, union accel_cmd *cmd,
-			   struct io_uring_cmd *ioucmd, void *data_buf,
-			   dma_addr_t data_dma, size_t data_len,
-			   void __user *user_buf);
+			   struct io_uring_cmd *ioucmd,
+			   struct accel_sg_state *sg,
+			   void *data_buf, dma_addr_t data_dma,
+			   size_t data_len, void __user *user_buf);
+void accel_sg_cleanup(struct accel_dev *dev, struct accel_sg_state *sg);
 void accel_complete_request(struct accel_request *req);
 int accel_ring_sq_doorbell(struct accel_queue *queue);
 int accel_ring_cq_doorbell(struct accel_queue *queue);

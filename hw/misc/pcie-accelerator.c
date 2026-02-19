@@ -667,7 +667,8 @@ static uint16_t accel_prp_transfer(PCIeAccel *n, uint64_t prp1, uint64_t prp2,
 typedef struct QEMU_PACKED AccelSglDesc {
     uint64_t addr;
     uint32_t length;
-    uint32_t type;
+    uint8_t  reserved[3];
+    uint8_t  type;          /* SGL descriptor type (ACCEL_SGL_DESC_*) */
 } AccelSglDesc;
 
 /**
@@ -675,7 +676,7 @@ typedef struct QEMU_PACKED AccelSglDesc {
  * @n: Device state
  * @sgl_addr: Address from first SGL descriptor
  * @sgl_length: Length from first SGL descriptor
- * @sgl_type: Type from first SGL descriptor
+ * @sgl_type: Type byte from first SGL descriptor (ACCEL_SGL_DESC_*)
  * @buf: Device-side buffer
  * @length: Total transfer length in bytes
  * @is_write: true = write to host, false = read from host
@@ -686,24 +687,27 @@ typedef struct QEMU_PACKED AccelSglDesc {
  * - Last Segment (0x03): like Segment, final array in the chain
  * - Chain pointers must be the last entry in a Segment descriptor array
  *
+ * For Data Block: sgl_length is the host buffer size (transfer is
+ * MIN(sgl_length, length) bytes).
+ * For Segment/Last Segment: sgl_length is the size of the descriptor array.
+ *
  * Returns: ACCEL_SC_SUCCESS or error status code
  */
 static uint16_t accel_sgl_transfer(PCIeAccel *n, uint64_t sgl_addr,
-                                    uint32_t sgl_length, uint32_t sgl_type,
+                                    uint32_t sgl_length, uint8_t sgl_type,
                                     void *buf, uint32_t length, bool is_write)
 {
     uint8_t *p = buf;
     uint32_t remaining = length;
     uint16_t status;
-    uint8_t desc_type = sgl_type & 0xFF;
 
     /* Single Data Block — direct contiguous transfer */
-    if (desc_type == ACCEL_SGL_DESC_DATA_BLOCK) {
+    if (sgl_type == ACCEL_SGL_DESC_DATA_BLOCK) {
         uint32_t chunk = MIN(sgl_length, remaining);
         qemu_log_mask(LOG_UNIMP,
                       "pcie-accel: SGL[0] addr 0x%" PRIx64
                       " length %u type %u write %d\n",
-                      sgl_addr, chunk, desc_type, is_write);
+                      sgl_addr, chunk, sgl_type, is_write);
         if (is_write) {
             return accel_dma_write_safe(n, sgl_addr, p, chunk);
         } else {
@@ -712,8 +716,8 @@ static uint16_t accel_sgl_transfer(PCIeAccel *n, uint64_t sgl_addr,
     }
 
     /* Segment / Last Segment: walk the descriptor chain */
-    if (desc_type != ACCEL_SGL_DESC_SEGMENT &&
-        desc_type != ACCEL_SGL_DESC_LAST_SEGMENT) {
+    if (sgl_type != ACCEL_SGL_DESC_SEGMENT &&
+        sgl_type != ACCEL_SGL_DESC_LAST_SEGMENT) {
         return ACCEL_SC_INVALID_FIELD;
     }
 
@@ -743,7 +747,7 @@ static uint16_t accel_sgl_transfer(PCIeAccel *n, uint64_t sgl_addr,
         for (uint32_t i = 0; i < num_descs && remaining > 0; i++) {
             uint64_t d_addr = le64_to_cpu(descs[i].addr);
             uint32_t d_len = le32_to_cpu(descs[i].length);
-            uint8_t d_type = le32_to_cpu(descs[i].type) & 0xFF;
+            uint8_t d_type = descs[i].type;
 
             qemu_log_mask(LOG_UNIMP,
                           "pcie-accel: SGL[%u] addr 0x%" PRIx64
@@ -816,7 +820,15 @@ static uint16_t accel_host_dma_transfer(PCIeAccel *n, AccelCmd *cmd,
     case ACCEL_CMD_FLAGS_DBD_SGL: {
         uint64_t addr = le64_to_cpu(cmd->dbd.sgl.addr);
         uint32_t sgl_len = le32_to_cpu(cmd->dbd.sgl.length);
-        uint32_t sgl_type = le32_to_cpu(cmd->dbd.sgl.type);
+        uint8_t sgl_type = cmd->dbd.sgl.type;
+        /*
+         * For Data Block descriptors, sgl_len is the host buffer size.
+         * If it's 0 (e.g. MEM_READ/MEM_WRITE overlay zeros the field),
+         * fall back to the caller-provided transfer length.
+         */
+        if (sgl_type == ACCEL_SGL_DESC_DATA_BLOCK && sgl_len == 0) {
+            sgl_len = length;
+        }
         return accel_sgl_transfer(n, addr, sgl_len, sgl_type,
                                    buf, length, is_write);
     }
@@ -1307,10 +1319,12 @@ void accel_process_sq(void *opaque)
         }
 
         /* Trace: dump fetched SQE */
-        qemu_log("pcie-accel: SQ[%u] FETCH @ 0x%" PRIx64 " head=%u\n"
+        qemu_log_mask(LOG_UNIMP,
+                 "pcie-accel: SQ[%u] FETCH @ 0x%" PRIx64 " head=%u\n"
                  "  opcode=0x%02x flags=0x%02x cid=%u\n"
-                 "  dbd.prpl.prp1=0x%016" PRIx64
-                 " dbd.prpl.prp2=0x%016" PRIx64 "\n"
+                 "  dbd: prp1=0x%016" PRIx64
+                 " prp2=0x%016" PRIx64
+                 " sgl.len=%u sgl.type=0x%02x\n"
                  "  data_xfer_size=%u\n"
                  "  cdw10=0x%08x cdw11=0x%08x cdw12=0x%08x\n"
                  "  cdw13=0x%08x cdw14=0x%08x cdw15=0x%08x\n",
@@ -1319,6 +1333,8 @@ void accel_process_sq(void *opaque)
                  le16_to_cpu(cmd.cid),
                  le64_to_cpu(cmd.dbd.prpl.prp1),
                  le64_to_cpu(cmd.dbd.prpl.prp2),
+                 le32_to_cpu(cmd.dbd.sgl.length),
+                 cmd.dbd.sgl.type,
                  le32_to_cpu(cmd.data_xfer_size),
                  le32_to_cpu(cmd.dw.admin.cdw10),
                  le32_to_cpu(cmd.dw.admin.cdw11),
