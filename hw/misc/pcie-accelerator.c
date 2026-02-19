@@ -34,7 +34,6 @@
 
 #include "hw/misc/pcie-accelerator.h"
 #include "hw/misc/pcie-accelerator-regs.h"
-#include "trace.h"
 
 /* Status code for deferred completion */
 #define ACCEL_NO_COMPLETE 0xFFFF
@@ -195,7 +194,6 @@ void accel_irq_assert(PCIeAccel *n, AccelCQueue *cq)
             qemu_log_mask(LOG_UNIMP,
                           "pcie-accel: MSI-X notify: cqid=%u vector=%u\n",
                           cq->cqid, cq->vector);
-            trace_pcie_accel_irq_assert(cq->cqid, cq->vector);
             msix_notify(pci, cq->vector);
         } else if (msi_enabled(pci)) {
             qemu_log_mask(LOG_UNIMP,
@@ -220,7 +218,8 @@ void accel_irq_deassert(PCIeAccel *n, AccelCQueue *cq)
         return;
     }
 
-    trace_pcie_accel_irq_deassert(cq->cqid);
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: CQ %u deasserting IRQ\n", cq->cqid);
 }
 
 /*
@@ -306,11 +305,12 @@ void accel_post_cqes(void *opaque)
             break;
         }
 
-        trace_pcie_accel_post_cqe(cq->cqid, sq->sqid, req->cqe.cid,
-                                   req->cqe.status);
+        qemu_log_mask(LOG_UNIMP,
+                      "pcie-accel: CQ %u: SQ %u CID %u status 0x%04x\n",
+                      cq->cqid, sq->sqid, req->cqe.cid, req->cqe.status);
 
-        /* Trace: dump posted CQE */
-        qemu_log("pcie-accel: CQ[%u] POST @ 0x%" PRIx64 " tail=%u phase=%u\n"
+        qemu_log_mask(LOG_UNIMP,
+                      "pcie-accel: CQ[%u] POST @ 0x%" PRIx64 " tail=%u phase=%u\n"
                  "  sq_head=%u cid=%u status=0x%08x result=0x%016" PRIx64 "\n",
                  cq->cqid, addr, cq->tail, cq->phase,
                  le16_to_cpu(req->cqe.sq_head),
@@ -576,7 +576,10 @@ static uint16_t accel_prp_transfer(PCIeAccel *n, uint64_t prp1, uint64_t prp2,
     uint32_t remaining;
 
     /* Transfer first page (may be partial due to sub-page offset) */
-    trace_pcie_accel_dma_prp_entry(0, prp1, first_chunk, is_write);
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: PRP[0] addr 0x%" PRIx64
+                  " chunk %u write %d\n",
+                  prp1, first_chunk, is_write);
     if (is_write) {
         status = accel_dma_write_safe(n, prp1, p, first_chunk);
     } else {
@@ -598,7 +601,10 @@ static uint16_t accel_prp_transfer(PCIeAccel *n, uint64_t prp1, uint64_t prp2,
         if (prp2 == 0) {
             return ACCEL_SC_INVALID_PRP;
         }
-        trace_pcie_accel_dma_prp_entry(1, prp2, remaining, is_write);
+        qemu_log_mask(LOG_UNIMP,
+                      "pcie-accel: PRP[1] addr 0x%" PRIx64
+                      " chunk %u write %d\n",
+                      prp2, remaining, is_write);
         if (is_write) {
             return accel_dma_write_safe(n, prp2, p, remaining);
         } else {
@@ -630,7 +636,10 @@ static uint16_t accel_prp_transfer(PCIeAccel *n, uint64_t prp1, uint64_t prp2,
         }
 
         chunk = MIN(remaining, page_size);
-        trace_pcie_accel_dma_prp_entry(i + 2, prp_entry, chunk, is_write);
+        qemu_log_mask(LOG_UNIMP,
+                      "pcie-accel: PRP[%u] addr 0x%" PRIx64
+                      " chunk %u write %d\n",
+                      i + 2, prp_entry, chunk, is_write);
         if (is_write) {
             status = accel_dma_write_safe(n, prp_entry, p, chunk);
         } else {
@@ -691,7 +700,10 @@ static uint16_t accel_sgl_transfer(PCIeAccel *n, uint64_t sgl_addr,
     /* Single Data Block — direct contiguous transfer */
     if (desc_type == ACCEL_SGL_DESC_DATA_BLOCK) {
         uint32_t chunk = MIN(sgl_length, remaining);
-        trace_pcie_accel_dma_sgl_entry(0, sgl_addr, chunk, desc_type, is_write);
+        qemu_log_mask(LOG_UNIMP,
+                      "pcie-accel: SGL[0] addr 0x%" PRIx64
+                      " length %u type %u write %d\n",
+                      sgl_addr, chunk, desc_type, is_write);
         if (is_write) {
             return accel_dma_write_safe(n, sgl_addr, p, chunk);
         } else {
@@ -733,7 +745,10 @@ static uint16_t accel_sgl_transfer(PCIeAccel *n, uint64_t sgl_addr,
             uint32_t d_len = le32_to_cpu(descs[i].length);
             uint8_t d_type = le32_to_cpu(descs[i].type) & 0xFF;
 
-            trace_pcie_accel_dma_sgl_entry(i, d_addr, d_len, d_type, is_write);
+            qemu_log_mask(LOG_UNIMP,
+                          "pcie-accel: SGL[%u] addr 0x%" PRIx64
+                          " length %u type %u write %d\n",
+                          i, d_addr, d_len, d_type, is_write);
 
             if (d_type == ACCEL_SGL_DESC_DATA_BLOCK) {
                 uint32_t chunk = MIN(d_len, remaining);
@@ -808,7 +823,10 @@ static uint16_t accel_host_dma_transfer(PCIeAccel *n, AccelCmd *cmd,
 
     case ACCEL_CMD_FLAGS_DBD_SVA: {
         uint64_t addr = le64_to_cpu(cmd->dbd.sva.addr);
-        trace_pcie_accel_dma_sva_entry(addr, length, is_write);
+        qemu_log_mask(LOG_UNIMP,
+                      "pcie-accel: SVA addr 0x%" PRIx64
+                      " length %u write %d\n",
+                      addr, length, is_write);
         if (is_write) {
             return accel_dma_write_safe(n, addr, buf, length);
         } else {
@@ -822,16 +840,16 @@ static uint16_t accel_host_dma_transfer(PCIeAccel *n, AccelCmd *cmd,
 }
 
 /**
- * accel_trace_data_dump - Dump buffer contents to trace, skipping zero chunks
+ * accel_log_data_dump - Dump buffer contents, skipping zero chunks
+ * @tag: Label string (e.g. "MEM_READ", "MEM_WRITE")
  * @buf: Data buffer
  * @length: Buffer length in bytes
  * @cid: Command ID
- * @is_read: true for MEM_READ, false for MEM_WRITE
  *
- * Emits one trace event per 16-byte chunk, skipping all-zero chunks.
+ * Logs one line per 16-byte chunk via qemu_log_mask, skipping all-zero chunks.
  */
-static void accel_trace_data_dump(const void *buf, uint32_t length,
-                                  uint16_t cid, bool is_read)
+static void accel_log_data_dump(const char *tag, const void *buf,
+                                uint32_t length, uint16_t cid)
 {
     const uint64_t *d = (const uint64_t *)buf;
     uint32_t i;
@@ -843,11 +861,10 @@ static void accel_trace_data_dump(const void *buf, uint32_t length,
         if (d0 == 0 && d1 == 0) {
             continue;
         }
-        if (is_read) {
-            trace_pcie_accel_mem_read_data(cid, i * 8, d0, d1);
-        } else {
-            trace_pcie_accel_mem_write_data(cid, i * 8, d0, d1);
-        }
+        qemu_log_mask(LOG_UNIMP,
+                      "pcie-accel: %s data: cid %u +0x%04x"
+                      " [0x%016" PRIx64 " 0x%016" PRIx64 "]\n",
+                      tag, cid, i * 8, d0, d1);
     }
 
     /* Handle trailing 8 bytes if length is not 16-aligned */
@@ -855,11 +872,10 @@ static void accel_trace_data_dump(const void *buf, uint32_t length,
         uint64_t d0 = le64_to_cpu(d[i]);
 
         if (d0 != 0) {
-            if (is_read) {
-                trace_pcie_accel_mem_read_data(cid, i * 8, d0, 0);
-            } else {
-                trace_pcie_accel_mem_write_data(cid, i * 8, d0, 0);
-            }
+            qemu_log_mask(LOG_UNIMP,
+                          "pcie-accel: %s data: cid %u +0x%04x"
+                          " [0x%016" PRIx64 "]\n",
+                          tag, cid, i * 8, d0);
         }
     }
 }
@@ -894,9 +910,11 @@ uint16_t accel_cmd_mem_read(PCIeAccel *n, AccelRequest *req)
      * The SGL descriptor describes the host buffer, not the transfer size.
      */
 
-    trace_pcie_accel_mem_read_cmd(le16_to_cpu(cmd->cid), dev_addr, host_addr,
-                                  length,
-                                  cmd->flags & ACCEL_CMD_FLAGS_DBD_MASK);
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: MEM_READ cmd: cid %u dev_addr 0x%" PRIx64
+                  " host_addr 0x%" PRIx64 " length %u dbd_type %u\n",
+                  le16_to_cpu(cmd->cid), dev_addr, host_addr,
+                  length, cmd->flags & ACCEL_CMD_FLAGS_DBD_MASK);
 
     if (length == 0 || length > (1 * MiB)) {
         return ACCEL_SC_INVALID_FIELD;
@@ -913,7 +931,7 @@ uint16_t accel_cmd_mem_read(PCIeAccel *n, AccelRequest *req)
     buf = g_malloc(length);
     memcpy(buf, dev_ptr, length);
 
-    accel_trace_data_dump(buf, length, le16_to_cpu(cmd->cid), true);
+    accel_log_data_dump("MEM_READ", buf, length, le16_to_cpu(cmd->cid));
 
     status = accel_host_dma_transfer(n, cmd, buf, length, true);
     g_free(buf);
@@ -955,9 +973,11 @@ uint16_t accel_cmd_mem_write(PCIeAccel *n, AccelRequest *req)
      * The SGL descriptor describes the host buffer, not the transfer size.
      */
 
-    trace_pcie_accel_mem_write_cmd(le16_to_cpu(cmd->cid), dev_addr, host_addr,
-                                   length,
-                                   cmd->flags & ACCEL_CMD_FLAGS_DBD_MASK);
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: MEM_WRITE cmd: cid %u dev_addr 0x%" PRIx64
+                  " host_addr 0x%" PRIx64 " length %u dbd_type %u\n",
+                  le16_to_cpu(cmd->cid), dev_addr, host_addr,
+                  length, cmd->flags & ACCEL_CMD_FLAGS_DBD_MASK);
 
     if (length == 0 || length > (1 * MiB)) {
         return ACCEL_SC_INVALID_FIELD;
@@ -979,7 +999,7 @@ uint16_t accel_cmd_mem_write(PCIeAccel *n, AccelRequest *req)
         return status;
     }
 
-    accel_trace_data_dump(buf, length, le16_to_cpu(cmd->cid), false);
+    accel_log_data_dump("MEM_WRITE", buf, length, le16_to_cpu(cmd->cid));
 
     memcpy(dev_ptr, buf, length);
     g_free(buf);
@@ -1000,9 +1020,6 @@ uint16_t accel_io_cmd(PCIeAccel *n, AccelRequest *req)
 {
     AccelCmd *cmd = &req->cmd;
 
-    trace_pcie_accel_cmd_dispatch(req->sq->sqid, le16_to_cpu(cmd->cid),
-                                   cmd->opcode);
-
     static const char *io_names[] = {
         [0]                    = "INVALID",
         [ACCEL_CMD_LOOPBACK]   = "LOOPBACK",
@@ -1014,7 +1031,8 @@ uint16_t accel_io_cmd(PCIeAccel *n, AccelRequest *req)
     };
     const char *name = (cmd->opcode <= ACCEL_CMD_MEM_WRITE && io_names[cmd->opcode])
                        ? io_names[cmd->opcode] : "UNKNOWN";
-    qemu_log("pcie-accel: IO CMD %s (0x%02x) sqid=%u cid=%u\n",
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: IO CMD %s (0x%02x) sqid=%u cid=%u\n",
              name, cmd->opcode, req->sq->sqid, le16_to_cpu(cmd->cid));
 
     switch (cmd->opcode) {
@@ -1034,7 +1052,9 @@ uint16_t accel_io_cmd(PCIeAccel *n, AccelRequest *req)
         return accel_cmd_mem_write(n, req);
 
     default:
-        trace_pcie_accel_err_invalid_cmd(req->sq->sqid, cmd->opcode);
+        qemu_log_mask(LOG_UNIMP,
+                      "pcie-accel: Invalid command: SQ %u opcode 0x%02x\n",
+                      req->sq->sqid, cmd->opcode);
         return ACCEL_SC_INVALID_OPCODE;
     }
 }
@@ -1207,8 +1227,6 @@ uint16_t accel_admin_cmd(PCIeAccel *n, AccelRequest *req)
 {
     AccelCmd *cmd = &req->cmd;
 
-    trace_pcie_accel_cmd_dispatch(0, le16_to_cpu(cmd->cid), cmd->opcode);
-
     static const char *adm_names[] = {
         [ACCEL_ADM_CMD_IDENTIFY]          = "IDENTIFY",
         [ACCEL_ADM_CMD_SET_FEATURES]      = "SET_FEATURES",
@@ -1221,7 +1239,8 @@ uint16_t accel_admin_cmd(PCIeAccel *n, AccelRequest *req)
     const char *name = (cmd->opcode <= ACCEL_ADM_CMD_P2P_TEARDOWN &&
                          adm_names[cmd->opcode]) ? adm_names[cmd->opcode]
                                                   : "UNKNOWN";
-    qemu_log("pcie-accel: ADMIN CMD %s (0x%02x) cid=%u\n",
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: ADMIN CMD %s (0x%02x) cid=%u\n",
              name, cmd->opcode, le16_to_cpu(cmd->cid));
 
     switch (cmd->opcode) {
@@ -1241,7 +1260,9 @@ uint16_t accel_admin_cmd(PCIeAccel *n, AccelRequest *req)
         return accel_cmd_p2p_teardown(n, req);
 
     default:
-        trace_pcie_accel_err_invalid_cmd(0, cmd->opcode);
+        qemu_log_mask(LOG_UNIMP,
+                      "pcie-accel: Invalid command: SQ 0 opcode 0x%02x\n",
+                      cmd->opcode);
         return ACCEL_SC_INVALID_OPCODE;
     }
 }
@@ -1267,13 +1288,9 @@ void accel_process_sq(void *opaque)
     uint64_t addr;
     uint16_t status;
 
-    trace_pcie_accel_process_sq(sq->sqid, sq->head, sq->tail);
-
     qemu_log_mask(LOG_UNIMP,
-                  "pcie-accel: process_sq called: sqid=%u head=%u tail=%u "
-                  "sq_empty=%d req_list_empty=%d\n",
-                  sq->sqid, sq->head, sq->tail,
-                  accel_sq_empty(sq), QTAILQ_EMPTY(&sq->req_list));
+                  "pcie-accel: Processing SQ %u: head %u tail %u\n",
+                  sq->sqid, sq->head, sq->tail);
 
     /* Process commands until queue is empty or no requests available */
     while (!accel_sq_empty(sq) && !QTAILQ_EMPTY(&sq->req_list)) {
@@ -1411,10 +1428,9 @@ static void accel_process_doorbell(PCIeAccel *n, hwaddr addr, uint32_t val)
             return;
         }
 
-        trace_pcie_accel_doorbell_cq(qid, new_head);
-
-        qemu_log("pcie-accel: CQ[%u] DOORBELL head=%u -> %u (tail=%u size=%u)\n",
-                 qid, cq->head, new_head, cq->tail, cq->size);
+        qemu_log_mask(LOG_UNIMP,
+                      "pcie-accel: CQ doorbell: cqid %u new_head %u\n",
+                      qid, new_head);
 
         cq->head = new_head;
 
@@ -1459,10 +1475,9 @@ static void accel_process_doorbell(PCIeAccel *n, hwaddr addr, uint32_t val)
             return;
         }
 
-        trace_pcie_accel_doorbell_sq(qid, new_tail);
-
-        qemu_log("pcie-accel: SQ[%u] DOORBELL tail=%u -> %u (head=%u size=%u)\n",
-                 qid, sq->tail, new_tail, sq->head, sq->size);
+        qemu_log_mask(LOG_UNIMP,
+                      "pcie-accel: SQ doorbell: sqid %u new_tail %u\n",
+                      qid, new_tail);
 
         sq->tail = new_tail;
 
@@ -1552,7 +1567,10 @@ static uint64_t accel_mmio_read(void *opaque, hwaddr addr, unsigned size)
         break;
     }
 
-    trace_pcie_accel_mmio_read(addr, val, size);
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: MMIO read: addr 0x%" PRIx64
+                  " val 0x%" PRIx64 " size %u\n",
+                  addr, val, size);
 
     return val;
 }
@@ -1569,7 +1587,10 @@ static void accel_mmio_write(void *opaque, hwaddr addr, uint64_t data,
 {
     PCIeAccel *n = PCIE_ACCEL(opaque);
 
-    trace_pcie_accel_mmio_write(addr, data, size);
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: MMIO write: addr 0x%" PRIx64
+                  " val 0x%" PRIx64 " size %u\n",
+                  addr, data, size);
 
     /* Handle P2P ring doorbell writes (0x4000+) */
     if (addr >= ACCEL_P2R_DB_BASE &&

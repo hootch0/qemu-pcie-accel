@@ -25,7 +25,6 @@
 
 #include "hw/misc/pcie-accelerator.h"
 #include "hw/misc/pcie-accelerator-regs.h"
-#include "trace.h"
 
 /* Maximum chunk size for P2P transfers (to avoid huge allocations) */
 #define ACCEL_P2P_CHUNK_SIZE (64 * KiB)
@@ -120,10 +119,8 @@ int accel_register_p2p_peer(PCIeAccel *n, uint16_t bdf, PCIDevice *pdev)
     QTAILQ_INSERT_TAIL(&n->p2p.peer_list, peer, entry);
     n->p2p.num_peers++;
 
-    trace_pcie_accel_p2p_setup(bdf);
-
-    qemu_log_mask(LOG_GUEST_ERROR,
-                  "pcie-accel: Registered P2P peer 0x%x (total: %u)\n",
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: P2P setup: peer BDF 0x%04x (total: %u)\n",
                   bdf, n->p2p.num_peers);
 
     return 0;
@@ -291,9 +288,12 @@ static uint16_t accel_p2p_transfer(PCIeAccel *n, AccelRequest *req, bool is_writ
         return ACCEL_SC_INTERNAL_ERROR;
     }
 
-    trace_pcie_accel_p2p_xfer(peer_bdf, peer_addr, total_len);
+    qemu_log_mask(LOG_UNIMP,
+                  "pcie-accel: P2P xfer: peer 0x%04x addr 0x%" PRIx64
+                  " len %u\n",
+                  peer_bdf, peer_addr, total_len);
 
-    qemu_log_mask(LOG_GUEST_ERROR,
+    qemu_log_mask(LOG_UNIMP,
                   "pcie-accel: P2P %s START: peer=0x%x host_addr=0x%" PRIx64
                   " peer_addr=0x%" PRIx64 " len=%u cmb_size=%" PRIu64 "\n",
                   is_write ? "WRITE" : "READ", peer_bdf, host_addr,
