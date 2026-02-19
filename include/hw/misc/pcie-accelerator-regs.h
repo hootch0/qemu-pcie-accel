@@ -15,6 +15,8 @@
 #ifndef HW_PCIE_ACCELERATOR_REGS_H
 #define HW_PCIE_ACCELERATOR_REGS_H
 
+#include "hw/misc/pcie-accelerator-cmd.h"
+
 /*
  * ===== Controller Register Map =====
  *
@@ -345,131 +347,6 @@
 #define ACCEL_CQ_DOORBELL(qid, stride) \
     (ACCEL_REG_DOORBELL + ((2 * (qid) + 1) * (stride)))
 
-/* ===== Command Set Opcodes ===== */
-/*
- * Command opcodes for submission queue entries.
- * Organized into admin and I/O command sets.
- */
-
-/* Admin Command Set */
-#define ACCEL_ADM_CMD_IDENTIFY          0x00
-#define ACCEL_ADM_CMD_SET_FEATURES      0x09
-#define ACCEL_ADM_CMD_GET_FEATURES      0x0A
-#define ACCEL_ADM_CMD_CREATE_IOQ        0x0D
-#define ACCEL_ADM_CMD_DELETE_IOQ        0x0E
-#define ACCEL_ADM_CMD_P2P_SETUP         0x0F
-#define ACCEL_ADM_CMD_P2P_TEARDOWN      0x10
-
-/* I/O Command Set */
-#define ACCEL_CMD_LOOPBACK              0x01
-#define ACCEL_CMD_P2P_WRITE             0x02
-#define ACCEL_CMD_P2P_READ              0x03
-#define ACCEL_CMD_MEM_READ              0x05
-#define ACCEL_CMD_MEM_WRITE             0x06
-
-/* ===== Command Flags ===== */
-/*
- * Flags for command submission (cmd.flags field).
- *
- * Bits [1:0] - DBD_TYPE: Data Block Descriptor type
- *   00 = PRPL (Physical Region Page List)
- *   01 = SGL  (Scatter-Gather List)
- *   10 = SVA  (Shared Virtual Address)
- *   11 = Reserved
- *
- * Bit [2] - PASID_EN: Enable PASID for this command
- * Bit [3] - PRIV: Privileged operation
- * Bits [7:4] - Reserved
- */
-#define ACCEL_CMD_FLAGS_DBD_MASK        0x03
-#define ACCEL_CMD_FLAGS_DBD_PRPL        0x00  /* PRP List */
-#define ACCEL_CMD_FLAGS_DBD_SGL         0x01  /* Scatter-Gather List */
-#define ACCEL_CMD_FLAGS_DBD_SVA         0x02  /* Shared Virtual Address */
-#define ACCEL_CMD_FLAGS_PASID_EN        0x04  /* PASID enable */
-#define ACCEL_CMD_FLAGS_PRIV            0x08  /* Privileged operation */
-
-/* SGL Descriptor Types (dbd.sgl.type[7:0]) */
-#define ACCEL_SGL_DESC_DATA_BLOCK       0x00  /* Data Block Descriptor */
-#define ACCEL_SGL_DESC_SEGMENT          0x02  /* Segment Descriptor (chain) */
-#define ACCEL_SGL_DESC_LAST_SEGMENT     0x03  /* Last Segment Descriptor */
-
-/* ===== Completion Status Codes ===== */
-/*
- * Status codes returned in completion queue entries.
- * Generic status codes (0x00-0x0F): Common across all commands
- * Command-specific codes (0x10-0xFF): Specific to command type
- */
-
-/* Generic Success */
-#define ACCEL_SC_SUCCESS                0x00  /* Command completed successfully */
-
-/* Generic Command Status (0x01-0x0F) */
-#define ACCEL_SC_INVALID_OPCODE         0x01  /* Invalid command opcode */
-#define ACCEL_SC_INVALID_FIELD          0x02  /* Invalid field in command */
-#define ACCEL_SC_CID_CONFLICT           0x03  /* Command ID conflict */
-#define ACCEL_SC_DATA_XFER_ERROR        0x04  /* Data transfer error */
-#define ACCEL_SC_CMD_ABORTED            0x05  /* Command aborted by request */
-#define ACCEL_SC_INTERNAL_ERROR         0x06  /* Internal device error */
-#define ACCEL_SC_CMD_ABORT_REQ          0x07  /* Command abort requested */
-#define ACCEL_SC_CMD_ABORT_SQID         0x08  /* Command aborted due to SQ deletion */
-#define ACCEL_SC_FUSED_FAIL             0x09  /* Fused command failed */
-#define ACCEL_SC_FUSED_MISSING          0x0A  /* Missing fused command */
-#define ACCEL_SC_INVALID_NAMESPACE      0x0B  /* Invalid namespace/peer ID */
-#define ACCEL_SC_CMD_SEQ_ERROR          0x0C  /* Command sequence error */
-
-/* Command Specific Status - Admin Commands (0x10-0x1F) */
-#define ACCEL_SC_INVALID_QUEUE_ID       0x10  /* Invalid queue identifier */
-#define ACCEL_SC_INVALID_QUEUE_SIZE     0x11  /* Invalid queue size */
-#define ACCEL_SC_INVALID_QUEUE_ADDR     0x12  /* Invalid queue address alignment */
-#define ACCEL_SC_MAX_QUEUES_EXCEEDED    0x13  /* Maximum queue limit exceeded */
-#define ACCEL_SC_QUEUE_ALREADY_EXISTS   0x14  /* Queue already created */
-#define ACCEL_SC_INVALID_IRQ_VECTOR     0x15  /* Invalid interrupt vector */
-#define ACCEL_SC_INVALID_LOG_PAGE       0x16  /* Invalid log page */
-#define ACCEL_SC_FEATURE_NOT_SUPPORTED  0x17  /* Feature not supported */
-#define ACCEL_SC_FEATURE_NOT_CHANGEABLE 0x18  /* Feature not changeable */
-#define ACCEL_SC_FEATURE_NOT_NAMESPACE  0x19  /* Feature not namespace specific */
-
-/* Command Specific Status - P2P Commands (0x20-0x2F) */
-#define ACCEL_SC_P2P_NOT_SUPPORTED      0x20  /* P2P DMA not supported */
-#define ACCEL_SC_P2P_PEER_NOT_FOUND     0x21  /* Peer device not registered */
-#define ACCEL_SC_P2P_PEER_INVALID       0x22  /* Invalid peer device */
-#define ACCEL_SC_P2P_XFER_ERROR         0x23  /* P2P transfer error */
-#define ACCEL_SC_P2P_MAX_PEERS          0x24  /* Maximum peers exceeded */
-#define ACCEL_SC_P2P_MAX_XFERS          0x25  /* Maximum concurrent transfers exceeded */
-#define ACCEL_SC_P2P_ADDR_INVALID       0x26  /* Invalid peer address */
-#define ACCEL_SC_P2P_LEN_INVALID        0x27  /* Invalid transfer length */
-
-/* Command Specific Status - DMA/Memory (0x30-0x3F) */
-#define ACCEL_SC_DMA_ERROR              0x30  /* DMA operation failed */
-#define ACCEL_SC_DMA_DECODE_ERROR       0x31  /* DMA address decode error */
-#define ACCEL_SC_DMA_TIMEOUT            0x32  /* DMA operation timeout */
-#define ACCEL_SC_INVALID_PRP            0x33  /* Invalid PRP/buffer pointer */
-#define ACCEL_SC_PRP_OFFSET_INVALID     0x34  /* PRP offset invalid */
-#define ACCEL_SC_LBA_OUT_OF_RANGE       0x35  /* Address out of range */
-
-/* Command Specific Status - PASID/SVA (0x40-0x4F) */
-#define ACCEL_SC_PASID_NOT_SUPPORTED    0x40  /* PASID not supported */
-#define ACCEL_SC_PASID_INVALID          0x41  /* Invalid PASID value */
-#define ACCEL_SC_PASID_NOT_ENABLED      0x42  /* PASID not enabled */
-#define ACCEL_SC_SVA_FAULT              0x43  /* Shared virtual address fault */
-
-/* Status Code Type */
-#define ACCEL_SCT_GENERIC               0x0   /* Generic command status */
-#define ACCEL_SCT_SPECIFIC              0x1   /* Command specific status */
-#define ACCEL_SCT_MEDIA_ERROR           0x2   /* Media and data integrity errors */
-#define ACCEL_SCT_VENDOR                0x7   /* Vendor specific */
-
-/* Do Not Retry (DNR) bit */
-#define ACCEL_SC_DNR                    (1 << 15)  /* Do not retry this command */
-
-/* ===== Feature Identifiers ===== */
-/*
- * Feature IDs for Get/Set Features admin commands.
- */
-#define ACCEL_FEAT_INTERRUPT_COALESCING 0x01  /* Interrupt coalescing settings */
-#define ACCEL_FEAT_NUM_QUEUES           0x07  /* Number of queues */
-#define ACCEL_FEAT_P2P_CONFIG           0x10  /* P2P configuration */
-
 /* ===== P2P Ring Configuration Register (P2RCFG) - Offset 0x0034 ===== */
 /*
  * 32-bit read-only register describing P2P ring buffer capabilities.
@@ -522,31 +399,6 @@
 #define ACCEL_RING_OFFSET(slot)         ((slot) * ACCEL_RING_SIZE)
 #define ACCEL_CMB_DATA_OFFSET           (ACCEL_P2R_MAX_SLOTS * ACCEL_RING_SIZE)
 
-/* ===== Ring Message Format ===== */
-/*
- * Variable-length messages in ring data area.
- * Each message is 8-byte aligned.
- *
- * struct AccelRingMsg {
- *     uint16_t type;      // message type
- *     uint16_t flags;     // per-message flags
- *     uint32_t length;    // total length including header (8-byte aligned)
- *     uint8_t  payload[]; // variable payload
- * };
- */
-#define ACCEL_RING_MSG_HDR_SIZE         8       /* Minimum message size */
-#define ACCEL_RING_MSG_ALIGN            8       /* Message alignment */
-
-/* Ring message types */
-#define ACCEL_RING_MSG_DATA             0x01    /* Data payload follows */
-#define ACCEL_RING_MSG_NOTIFY           0x02    /* Signal/fence, no payload */
-#define ACCEL_RING_MSG_STATUS           0x03    /* Status/completion response */
-
-/* ===== P2P Ring Status Codes ===== */
-#define ACCEL_SC_P2R_INVALID_SLOT       0x50  /* Invalid ring slot */
-#define ACCEL_SC_P2R_SLOT_ACTIVE        0x51  /* Slot already in use */
-#define ACCEL_SC_P2R_PEER_MISMATCH      0x52  /* Peer device type mismatch */
-
 /* ===== Identify Data - Memory Region Descriptor Fields ===== */
 /*
  * dev_mem_region.desc (64 bits):
@@ -573,9 +425,6 @@
      (((uint64_t)(type) & ACCEL_MR_TYPE_MASK)  << ACCEL_MR_TYPE_SHIFT) | \
      (((uint64_t)(pid)  & ACCEL_MR_PID_MASK)   << ACCEL_MR_PID_SHIFT) | \
      (((uint64_t)(size) & ACCEL_MR_SIZE_MASK)   << ACCEL_MR_SIZE_SHIFT))
-
-/* Maximum memory regions in identify data */
-#define ACCEL_ID_MAX_MEM_REGIONS    191
 
 /* ===== BAR Sizes ===== */
 #define ACCEL_BAR0_SIZE         (8 * 1024)         /* 8KB - MMIO registers + doorbells */

@@ -547,39 +547,6 @@ static void *accel_resolve_dev_addr(PCIeAccel *n, uint64_t dev_addr,
     return NULL;
 }
 
-/**
- * accel_resolve_xfer_length - Resolve effective transfer length from DBD
- * @cmd: Command structure
- * @length: In/out transfer length
- *
- * For SGL Data Block descriptors, the transfer length comes from the
- * SGL descriptor rather than the command field. For all other DBD types
- * (PRPL, SGL Segment, SVA), the caller-provided length is used as-is.
- *
- * Returns: ACCEL_SC_SUCCESS or error status code
- */
-static uint16_t accel_resolve_xfer_length(AccelCmd *cmd, uint32_t *length)
-{
-    uint8_t dbd_type = cmd->flags & ACCEL_CMD_FLAGS_DBD_MASK;
-
-    switch (dbd_type) {
-    case ACCEL_CMD_FLAGS_DBD_PRPL:
-    case ACCEL_CMD_FLAGS_DBD_SVA:
-        return ACCEL_SC_SUCCESS;
-
-    case ACCEL_CMD_FLAGS_DBD_SGL: {
-        uint8_t sgl_type = le32_to_cpu(cmd->dbd.sgl.type) & 0xFF;
-        if (sgl_type == ACCEL_SGL_DESC_DATA_BLOCK) {
-            *length = le32_to_cpu(cmd->dbd.sgl.length);
-        }
-        /* For Segment/Last Segment, keep command-field length */
-        return ACCEL_SC_SUCCESS;
-    }
-
-    default:
-        return ACCEL_SC_INVALID_FIELD;
-    }
-}
 
 /**
  * accel_prp_transfer - DMA transfer using PRP list
@@ -609,6 +576,7 @@ static uint16_t accel_prp_transfer(PCIeAccel *n, uint64_t prp1, uint64_t prp2,
     uint32_t remaining;
 
     /* Transfer first page (may be partial due to sub-page offset) */
+    trace_pcie_accel_dma_prp_entry(0, prp1, first_chunk, is_write);
     if (is_write) {
         status = accel_dma_write_safe(n, prp1, p, first_chunk);
     } else {
@@ -630,6 +598,7 @@ static uint16_t accel_prp_transfer(PCIeAccel *n, uint64_t prp1, uint64_t prp2,
         if (prp2 == 0) {
             return ACCEL_SC_INVALID_PRP;
         }
+        trace_pcie_accel_dma_prp_entry(1, prp2, remaining, is_write);
         if (is_write) {
             return accel_dma_write_safe(n, prp2, p, remaining);
         } else {
@@ -661,6 +630,7 @@ static uint16_t accel_prp_transfer(PCIeAccel *n, uint64_t prp1, uint64_t prp2,
         }
 
         chunk = MIN(remaining, page_size);
+        trace_pcie_accel_dma_prp_entry(i + 2, prp_entry, chunk, is_write);
         if (is_write) {
             status = accel_dma_write_safe(n, prp_entry, p, chunk);
         } else {
@@ -721,6 +691,7 @@ static uint16_t accel_sgl_transfer(PCIeAccel *n, uint64_t sgl_addr,
     /* Single Data Block — direct contiguous transfer */
     if (desc_type == ACCEL_SGL_DESC_DATA_BLOCK) {
         uint32_t chunk = MIN(sgl_length, remaining);
+        trace_pcie_accel_dma_sgl_entry(0, sgl_addr, chunk, desc_type, is_write);
         if (is_write) {
             return accel_dma_write_safe(n, sgl_addr, p, chunk);
         } else {
@@ -761,6 +732,8 @@ static uint16_t accel_sgl_transfer(PCIeAccel *n, uint64_t sgl_addr,
             uint64_t d_addr = le64_to_cpu(descs[i].addr);
             uint32_t d_len = le32_to_cpu(descs[i].length);
             uint8_t d_type = le32_to_cpu(descs[i].type) & 0xFF;
+
+            trace_pcie_accel_dma_sgl_entry(i, d_addr, d_len, d_type, is_write);
 
             if (d_type == ACCEL_SGL_DESC_DATA_BLOCK) {
                 uint32_t chunk = MIN(d_len, remaining);
@@ -835,6 +808,7 @@ static uint16_t accel_host_dma_transfer(PCIeAccel *n, AccelCmd *cmd,
 
     case ACCEL_CMD_FLAGS_DBD_SVA: {
         uint64_t addr = le64_to_cpu(cmd->dbd.sva.addr);
+        trace_pcie_accel_dma_sva_entry(addr, length, is_write);
         if (is_write) {
             return accel_dma_write_safe(n, addr, buf, length);
         } else {
@@ -869,16 +843,15 @@ uint16_t accel_cmd_mem_read(PCIeAccel *n, AccelRequest *req)
     void *dev_ptr;
     void *buf;
 
-    status = accel_resolve_xfer_length(cmd, &length);
-    if (status != ACCEL_SC_SUCCESS) {
-        return status;
-    }
+    /*
+     * MEM_READ has an explicit length field (CDW7) — do NOT call
+     * accel_resolve_xfer_length() which would incorrectly override
+     * length with dbd.sgl.length for SGL Data Block mode.
+     * The SGL descriptor describes the host buffer, not the transfer size.
+     */
 
-    qemu_log_mask(LOG_UNIMP,
-                  "pcie-accel: MEM_READ: dev_addr=0x%" PRIx64
-                  " length=%u dbd_type=%u\n",
-                  dev_addr, length,
-                  cmd->flags & ACCEL_CMD_FLAGS_DBD_MASK);
+    trace_pcie_accel_mem_read_cmd(le16_to_cpu(cmd->cid), dev_addr, length,
+                                  cmd->flags & ACCEL_CMD_FLAGS_DBD_MASK);
 
     if (length == 0 || length > (1 * MiB)) {
         return ACCEL_SC_INVALID_FIELD;
@@ -894,6 +867,13 @@ uint16_t accel_cmd_mem_read(PCIeAccel *n, AccelRequest *req)
 
     buf = g_malloc(length);
     memcpy(buf, dev_ptr, length);
+
+    {
+        const uint64_t *d = (const uint64_t *)buf;
+        uint64_t d0 = length >= 8 ? le64_to_cpu(d[0]) : 0;
+        uint64_t d1 = length >= 16 ? le64_to_cpu(d[1]) : 0;
+        trace_pcie_accel_mem_read_data(le16_to_cpu(cmd->cid), length, d0, d1);
+    }
 
     status = accel_host_dma_transfer(n, cmd, buf, length, true);
     g_free(buf);
@@ -927,16 +907,15 @@ uint16_t accel_cmd_mem_write(PCIeAccel *n, AccelRequest *req)
     void *dev_ptr;
     void *buf;
 
-    status = accel_resolve_xfer_length(cmd, &length);
-    if (status != ACCEL_SC_SUCCESS) {
-        return status;
-    }
+    /*
+     * MEM_WRITE has an explicit length field (CDW7) — do NOT call
+     * accel_resolve_xfer_length() which would incorrectly override
+     * length with dbd.sgl.length for SGL Data Block mode.
+     * The SGL descriptor describes the host buffer, not the transfer size.
+     */
 
-    qemu_log_mask(LOG_UNIMP,
-                  "pcie-accel: MEM_WRITE: dev_addr=0x%" PRIx64
-                  " length=%u dbd_type=%u\n",
-                  dev_addr, length,
-                  cmd->flags & ACCEL_CMD_FLAGS_DBD_MASK);
+    trace_pcie_accel_mem_write_cmd(le16_to_cpu(cmd->cid), dev_addr, length,
+                                   cmd->flags & ACCEL_CMD_FLAGS_DBD_MASK);
 
     if (length == 0 || length > (1 * MiB)) {
         return ACCEL_SC_INVALID_FIELD;
@@ -956,6 +935,13 @@ uint16_t accel_cmd_mem_write(PCIeAccel *n, AccelRequest *req)
     if (status != ACCEL_SC_SUCCESS) {
         g_free(buf);
         return status;
+    }
+
+    {
+        const uint64_t *d = (const uint64_t *)buf;
+        uint64_t d0 = length >= 8 ? le64_to_cpu(d[0]) : 0;
+        uint64_t d1 = length >= 16 ? le64_to_cpu(d[1]) : 0;
+        trace_pcie_accel_mem_write_data(le16_to_cpu(cmd->cid), length, d0, d1);
     }
 
     memcpy(dev_ptr, buf, length);
