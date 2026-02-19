@@ -852,43 +852,70 @@ static uint16_t accel_host_dma_transfer(PCIeAccel *n, AccelCmd *cmd,
 }
 
 /**
- * accel_log_data_dump - Dump buffer contents, skipping zero chunks
+ * accel_log_data_dump - Dump buffer contents, compressing repeated chunks
  * @tag: Label string (e.g. "MEM_READ", "MEM_WRITE")
  * @buf: Data buffer
  * @length: Buffer length in bytes
  * @cid: Command ID
  *
- * Logs one line per 16-byte chunk via qemu_log_mask, skipping all-zero chunks.
+ * Logs one line per 16-byte chunk via qemu_log_mask.  Runs of identical
+ * chunks are compressed: the first is printed normally, then a single
+ * "* (repeats N times, ...)" line replaces the duplicates.
  */
 static void accel_log_data_dump(const char *tag, const void *buf,
                                 uint32_t length, uint16_t cid)
 {
     const uint64_t *d = (const uint64_t *)buf;
+    uint32_t nchunks = length / 16;
+    uint32_t tail = length & 0xF;
     uint32_t i;
+    uint32_t run_start = 0;     /* first chunk index of current run */
+    uint64_t run_d0 = 0, run_d1 = 0;
 
-    for (i = 0; i + 1 < length / 8; i += 2) {
-        uint64_t d0 = le64_to_cpu(d[i]);
-        uint64_t d1 = le64_to_cpu(d[i + 1]);
+    for (i = 0; i < nchunks; i++) {
+        uint64_t d0 = le64_to_cpu(d[i * 2]);
+        uint64_t d1 = le64_to_cpu(d[i * 2 + 1]);
 
-        if (d0 == 0 && d1 == 0) {
-            continue;
+        if (i > 0 && d0 == run_d0 && d1 == run_d1) {
+            continue;   /* still in a run of identical chunks */
         }
+
+        /* Flush previous run if it had duplicates */
+        if (i > 0 && i - run_start > 1) {
+            qemu_log_mask(LOG_UNIMP,
+                          "pcie-accel: %s data: cid %u  "
+                          "* (repeats %u times, +0x%04x..+0x%04x)\n",
+                          tag, cid, i - run_start,
+                          run_start * 16, (i - 1) * 16);
+        }
+
+        /* Print this new distinct chunk */
         qemu_log_mask(LOG_UNIMP,
                       "pcie-accel: %s data: cid %u +0x%04x"
                       " [0x%016" PRIx64 " 0x%016" PRIx64 "]\n",
-                      tag, cid, i * 8, d0, d1);
+                      tag, cid, i * 16, d0, d1);
+
+        run_start = i;
+        run_d0 = d0;
+        run_d1 = d1;
     }
 
-    /* Handle trailing 8 bytes if length is not 16-aligned */
-    if (i < (length + 7) / 8) {
-        uint64_t d0 = le64_to_cpu(d[i]);
+    /* Flush final run if it had duplicates */
+    if (nchunks > 0 && nchunks - run_start > 1) {
+        qemu_log_mask(LOG_UNIMP,
+                      "pcie-accel: %s data: cid %u  "
+                      "* (repeats %u times, +0x%04x..+0x%04x)\n",
+                      tag, cid, nchunks - run_start,
+                      run_start * 16, (nchunks - 1) * 16);
+    }
 
-        if (d0 != 0) {
-            qemu_log_mask(LOG_UNIMP,
-                          "pcie-accel: %s data: cid %u +0x%04x"
-                          " [0x%016" PRIx64 "]\n",
-                          tag, cid, i * 8, d0);
-        }
+    /* Handle trailing bytes (< 16) */
+    if (tail >= 8) {
+        uint64_t d0 = le64_to_cpu(d[nchunks * 2]);
+        qemu_log_mask(LOG_UNIMP,
+                      "pcie-accel: %s data: cid %u +0x%04x"
+                      " [0x%016" PRIx64 "]\n",
+                      tag, cid, nchunks * 16, d0);
     }
 }
 
