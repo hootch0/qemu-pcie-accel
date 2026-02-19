@@ -499,6 +499,32 @@ int accel_p2p_read(struct accel_device *dev, uint16_t qid,
                    uint16_t peer_bdf, void *local_data,
                    uint64_t peer_addr, uint32_t length);
 
+/**
+ * accel_mem_write - Write from host to device memory (synchronous)
+ * @dev: Device handle
+ * @qid: Queue ID
+ * @data: Source buffer in host memory
+ * @dev_addr: Device memory address (CMB/DPA offset)
+ * @length: Transfer length in bytes
+ *
+ * Returns: ACCEL_SUCCESS or error code
+ */
+int accel_mem_write(struct accel_device *dev, uint16_t qid,
+                    const void *data, uint64_t dev_addr, uint32_t length);
+
+/**
+ * accel_mem_read - Read from device memory to host (synchronous)
+ * @dev: Device handle
+ * @qid: Queue ID
+ * @data: Destination buffer in host memory
+ * @dev_addr: Device memory address (CMB/DPA offset)
+ * @length: Transfer length in bytes
+ *
+ * Returns: ACCEL_SUCCESS or error code
+ */
+int accel_mem_read(struct accel_device *dev, uint16_t qid,
+                   void *data, uint64_t dev_addr, uint32_t length);
+
 /*
  * ----- Asynchronous Command Submission -----
  * These functions submit commands and return immediately.
@@ -571,6 +597,37 @@ int accel_async_p2p_write(struct accel_device *dev, uint16_t qid,
 int accel_async_p2p_read(struct accel_device *dev, uint16_t qid,
                          uint16_t peer_bdf, void *local_data,
                          uint64_t peer_addr, uint32_t length,
+                         struct accel_async_token *token);
+
+/**
+ * accel_async_mem_write - Async write from host to device memory
+ * @dev: Device handle
+ * @qid: Queue ID
+ * @data: Source buffer in host memory
+ * @dev_addr: Device memory address (CMB/DPA offset)
+ * @length: Transfer length in bytes
+ * @token: Token for tracking completion
+ *
+ * Returns: ACCEL_SUCCESS or error code
+ */
+int accel_async_mem_write(struct accel_device *dev, uint16_t qid,
+                          const void *data, uint64_t dev_addr,
+                          uint32_t length,
+                          struct accel_async_token *token);
+
+/**
+ * accel_async_mem_read - Async read from device memory to host
+ * @dev: Device handle
+ * @qid: Queue ID
+ * @data: Destination buffer in host memory
+ * @dev_addr: Device memory address (CMB/DPA offset)
+ * @length: Transfer length in bytes
+ * @token: Token for tracking completion
+ *
+ * Returns: ACCEL_SUCCESS or error code
+ */
+int accel_async_mem_read(struct accel_device *dev, uint16_t qid,
+                         void *data, uint64_t dev_addr, uint32_t length,
                          struct accel_async_token *token);
 
 /*

@@ -538,6 +538,44 @@ int accel_p2p_read(struct accel_device *dev, uint16_t qid,
     return accel_submit_cmd(dev, qid, &cmd, NULL, 5000);
 }
 
+/**
+ * accel_mem_write - Synchronous write from host to device memory
+ */
+int accel_mem_write(struct accel_device *dev, uint16_t qid,
+                    const void *data, uint64_t dev_addr, uint32_t length)
+{
+    union accel_cmd cmd = {0};
+
+    if (!dev || !data || length == 0)
+        return ACCEL_ERR_INVAL;
+
+    cmd.mem_write.opcode = ACCEL_CMD_MEM_WRITE;
+    cmd.mem_write.dev_addr = dev_addr;
+    cmd.mem_write.host_addr = (uint64_t)(uintptr_t)data;
+    cmd.mem_write.length = length;
+
+    return accel_submit_cmd(dev, qid, &cmd, NULL, 5000);
+}
+
+/**
+ * accel_mem_read - Synchronous read from device memory to host
+ */
+int accel_mem_read(struct accel_device *dev, uint16_t qid,
+                   void *data, uint64_t dev_addr, uint32_t length)
+{
+    union accel_cmd cmd = {0};
+
+    if (!dev || !data || length == 0)
+        return ACCEL_ERR_INVAL;
+
+    cmd.mem_read.opcode = ACCEL_CMD_MEM_READ;
+    cmd.mem_read.dev_addr = dev_addr;
+    cmd.mem_read.host_addr = (uint64_t)(uintptr_t)data;
+    cmd.mem_read.length = length;
+
+    return accel_submit_cmd(dev, qid, &cmd, NULL, 5000);
+}
+
 /*
  * ===== Asynchronous Command Submission =====
  */
@@ -651,6 +689,53 @@ int accel_async_p2p_read(struct accel_device *dev, uint16_t qid,
     cmd.dw.p2p.peer_bdf = peer_bdf;
 
     token->buffer = local_data;
+    token->length = length;
+
+    return accel_async_submit_cmd(dev, qid, &cmd, token);
+}
+
+/**
+ * accel_async_mem_write - Async write from host to device memory
+ */
+int accel_async_mem_write(struct accel_device *dev, uint16_t qid,
+                          const void *data, uint64_t dev_addr,
+                          uint32_t length,
+                          struct accel_async_token *token)
+{
+    union accel_cmd cmd = {0};
+
+    if (!dev || !data || length == 0 || !token)
+        return ACCEL_ERR_INVAL;
+
+    cmd.mem_write.opcode = ACCEL_CMD_MEM_WRITE;
+    cmd.mem_write.dev_addr = dev_addr;
+    cmd.mem_write.host_addr = (uint64_t)(uintptr_t)data;
+    cmd.mem_write.length = length;
+
+    token->buffer = (void *)data;
+    token->length = length;
+
+    return accel_async_submit_cmd(dev, qid, &cmd, token);
+}
+
+/**
+ * accel_async_mem_read - Async read from device memory to host
+ */
+int accel_async_mem_read(struct accel_device *dev, uint16_t qid,
+                         void *data, uint64_t dev_addr, uint32_t length,
+                         struct accel_async_token *token)
+{
+    union accel_cmd cmd = {0};
+
+    if (!dev || !data || length == 0 || !token)
+        return ACCEL_ERR_INVAL;
+
+    cmd.mem_read.opcode = ACCEL_CMD_MEM_READ;
+    cmd.mem_read.dev_addr = dev_addr;
+    cmd.mem_read.host_addr = (uint64_t)(uintptr_t)data;
+    cmd.mem_read.length = length;
+
+    token->buffer = data;
     token->length = length;
 
     return accel_async_submit_cmd(dev, qid, &cmd, token);

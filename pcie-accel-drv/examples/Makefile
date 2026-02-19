@@ -33,7 +33,7 @@ BINDIR := $(PREFIX)/bin
 LIBDIR := $(realpath ../libaccel)
 
 # Source files
-EXAMPLES := test_loopback test_p2p
+EXAMPLES := test_loopback test_p2p test_mem
 
 # Default target
 all: $(EXAMPLES)
@@ -43,6 +43,9 @@ test_loopback: test_loopback.c ../libaccel/libaccel.a
 	$(CC) $(CFLAGS) -I../libaccel -o $@ $< ../libaccel/libaccel.a $(LIBS)
 
 test_p2p: test_p2p.c ../libaccel/libaccel.a
+	$(CC) $(CFLAGS) -I../libaccel -o $@ $< ../libaccel/libaccel.a $(LIBS)
+
+test_mem: test_mem.c ../libaccel/libaccel.a
 	$(CC) $(CFLAGS) -I../libaccel -o $@ $< ../libaccel/libaccel.a $(LIBS)
 
 # Ensure library is built
@@ -100,6 +103,11 @@ run-p2p-queue: test_p2p
 	@echo "Note: Requires /dev/accel0, /dev/accel1 and root privileges"
 	sudo LD_LIBRARY_PATH=$(LIBDIR) ./test_p2p -q
 
+run-mem: test_mem
+	@echo "Running memory read/write test..."
+	@echo "Note: Requires /dev/accel0 and root privileges"
+	sudo LD_LIBRARY_PATH=$(LIBDIR) ./test_mem
+
 # Help
 help:
 	@echo "PCIe Accelerator Examples (io_uring)"
@@ -124,6 +132,7 @@ help:
 	@echo "Examples:"
 	@echo "  test_loopback - Basic loopback DMA test with io_uring"
 	@echo "  test_p2p      - Peer-to-peer DMA test with io_uring"
+	@echo "  test_mem      - Device memory read/write test"
 	@echo ""
 	@echo "Usage:"
 	@echo "  ./test_loopback -h       # Show help"
@@ -140,3 +149,4 @@ help:
 .PHONY: all clean install uninstall help
 .PHONY: run-loopback run-loopback-async run-loopback-concurrent
 .PHONY: run-p2p run-p2p-async run-p2p-bidir run-p2p-queue
+.PHONY: run-mem

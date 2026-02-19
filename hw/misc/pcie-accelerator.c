@@ -822,6 +822,49 @@ static uint16_t accel_host_dma_transfer(PCIeAccel *n, AccelCmd *cmd,
 }
 
 /**
+ * accel_trace_data_dump - Dump buffer contents to trace, skipping zero chunks
+ * @buf: Data buffer
+ * @length: Buffer length in bytes
+ * @cid: Command ID
+ * @is_read: true for MEM_READ, false for MEM_WRITE
+ *
+ * Emits one trace event per 16-byte chunk, skipping all-zero chunks.
+ */
+static void accel_trace_data_dump(const void *buf, uint32_t length,
+                                  uint16_t cid, bool is_read)
+{
+    const uint64_t *d = (const uint64_t *)buf;
+    uint32_t i;
+
+    for (i = 0; i + 1 < length / 8; i += 2) {
+        uint64_t d0 = le64_to_cpu(d[i]);
+        uint64_t d1 = le64_to_cpu(d[i + 1]);
+
+        if (d0 == 0 && d1 == 0) {
+            continue;
+        }
+        if (is_read) {
+            trace_pcie_accel_mem_read_data(cid, i * 8, d0, d1);
+        } else {
+            trace_pcie_accel_mem_write_data(cid, i * 8, d0, d1);
+        }
+    }
+
+    /* Handle trailing 8 bytes if length is not 16-aligned */
+    if (i < (length + 7) / 8) {
+        uint64_t d0 = le64_to_cpu(d[i]);
+
+        if (d0 != 0) {
+            if (is_read) {
+                trace_pcie_accel_mem_read_data(cid, i * 8, d0, 0);
+            } else {
+                trace_pcie_accel_mem_write_data(cid, i * 8, d0, 0);
+            }
+        }
+    }
+}
+
+/**
  * accel_cmd_mem_read - Read from device memory to host
  * @n: Device state
  * @req: Request structure
@@ -838,6 +881,7 @@ uint16_t accel_cmd_mem_read(PCIeAccel *n, AccelRequest *req)
 {
     AccelCmd *cmd = &req->cmd;
     uint64_t dev_addr = le64_to_cpu(cmd->mem_read.dev_addr);
+    uint64_t host_addr = le64_to_cpu(cmd->mem_read.host_addr);
     uint32_t length = le32_to_cpu(cmd->mem_read.length);
     uint16_t status;
     void *dev_ptr;
@@ -850,7 +894,8 @@ uint16_t accel_cmd_mem_read(PCIeAccel *n, AccelRequest *req)
      * The SGL descriptor describes the host buffer, not the transfer size.
      */
 
-    trace_pcie_accel_mem_read_cmd(le16_to_cpu(cmd->cid), dev_addr, length,
+    trace_pcie_accel_mem_read_cmd(le16_to_cpu(cmd->cid), dev_addr, host_addr,
+                                  length,
                                   cmd->flags & ACCEL_CMD_FLAGS_DBD_MASK);
 
     if (length == 0 || length > (1 * MiB)) {
@@ -868,12 +913,7 @@ uint16_t accel_cmd_mem_read(PCIeAccel *n, AccelRequest *req)
     buf = g_malloc(length);
     memcpy(buf, dev_ptr, length);
 
-    {
-        const uint64_t *d = (const uint64_t *)buf;
-        uint64_t d0 = length >= 8 ? le64_to_cpu(d[0]) : 0;
-        uint64_t d1 = length >= 16 ? le64_to_cpu(d[1]) : 0;
-        trace_pcie_accel_mem_read_data(le16_to_cpu(cmd->cid), length, d0, d1);
-    }
+    accel_trace_data_dump(buf, length, le16_to_cpu(cmd->cid), true);
 
     status = accel_host_dma_transfer(n, cmd, buf, length, true);
     g_free(buf);
@@ -902,6 +942,7 @@ uint16_t accel_cmd_mem_write(PCIeAccel *n, AccelRequest *req)
 {
     AccelCmd *cmd = &req->cmd;
     uint64_t dev_addr = le64_to_cpu(cmd->mem_write.dev_addr);
+    uint64_t host_addr = le64_to_cpu(cmd->mem_write.host_addr);
     uint32_t length = le32_to_cpu(cmd->mem_write.length);
     uint16_t status;
     void *dev_ptr;
@@ -914,7 +955,8 @@ uint16_t accel_cmd_mem_write(PCIeAccel *n, AccelRequest *req)
      * The SGL descriptor describes the host buffer, not the transfer size.
      */
 
-    trace_pcie_accel_mem_write_cmd(le16_to_cpu(cmd->cid), dev_addr, length,
+    trace_pcie_accel_mem_write_cmd(le16_to_cpu(cmd->cid), dev_addr, host_addr,
+                                   length,
                                    cmd->flags & ACCEL_CMD_FLAGS_DBD_MASK);
 
     if (length == 0 || length > (1 * MiB)) {
@@ -937,12 +979,7 @@ uint16_t accel_cmd_mem_write(PCIeAccel *n, AccelRequest *req)
         return status;
     }
 
-    {
-        const uint64_t *d = (const uint64_t *)buf;
-        uint64_t d0 = length >= 8 ? le64_to_cpu(d[0]) : 0;
-        uint64_t d1 = length >= 16 ? le64_to_cpu(d[1]) : 0;
-        trace_pcie_accel_mem_write_data(le16_to_cpu(cmd->cid), length, d0, d1);
-    }
+    accel_trace_data_dump(buf, length, le16_to_cpu(cmd->cid), false);
 
     memcpy(dev_ptr, buf, length);
     g_free(buf);

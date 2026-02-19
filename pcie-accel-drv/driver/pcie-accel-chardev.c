@@ -141,6 +141,16 @@ static int accel_uring_cmd_submit(struct io_uring_cmd *ioucmd,
 			le64_to_cpu(cmd.dw.p2p.peer_addr),
 			le64_to_cpu(cmd.dbd.prpl.prp1), data_len);
 		break;
+	case ACCEL_CMD_MEM_READ:
+	case ACCEL_CMD_MEM_WRITE:
+		data_len = le32_to_cpu(cmd.mem_write.length);
+		dev_dbg(&dev->pdev->dev,
+			"SUBMIT: MEM_%s qid=%u dev_addr=0x%llx "
+			"host_addr=0x%llx len=%zu\n",
+			cmd.opcode == ACCEL_CMD_MEM_WRITE ? "WRITE" : "READ",
+			qid, le64_to_cpu(cmd.mem_write.dev_addr),
+			le64_to_cpu(cmd.mem_write.host_addr), data_len);
+		break;
 	default:
 		/* No data buffer needed */
 		data_len = 0;
@@ -161,7 +171,8 @@ static int accel_uring_cmd_submit(struct io_uring_cmd *ioucmd,
 		 * For read operations, save user address for copy back on completion.
 		 */
 		if (cmd.opcode == ACCEL_CMD_P2P_WRITE ||
-		    cmd.opcode == ACCEL_CMD_LOOPBACK) {
+		    cmd.opcode == ACCEL_CMD_LOOPBACK ||
+		    cmd.opcode == ACCEL_CMD_MEM_WRITE) {
 			void __user *uptr = (void __user *)user_addr;
 
 			/* Validate user address before copying */
@@ -176,7 +187,8 @@ static int accel_uring_cmd_submit(struct io_uring_cmd *ioucmd,
 						  data_buf, data_dma);
 				return -EFAULT;
 			}
-		} else if (cmd.opcode == ACCEL_CMD_P2P_READ) {
+		} else if (cmd.opcode == ACCEL_CMD_P2P_READ ||
+			   cmd.opcode == ACCEL_CMD_MEM_READ) {
 			/* Save user buffer for copy back on completion */
 			if (!user_addr || !access_ok((void __user *)user_addr, data_len)) {
 				dma_free_coherent(&dev->pdev->dev, data_len,
@@ -462,6 +474,10 @@ static long accel_ioctl_submit_cmd(struct accel_dev *dev, unsigned long arg)
 	case ACCEL_CMD_P2P_READ:
 		data_len = le32_to_cpu(ucmd.submit.cmd.dw.p2p.length);
 		break;
+	case ACCEL_CMD_MEM_READ:
+	case ACCEL_CMD_MEM_WRITE:
+		data_len = le32_to_cpu(ucmd.submit.cmd.mem_write.length);
+		break;
 	default:
 		data_len = 0;
 		break;
@@ -475,7 +491,8 @@ static long accel_ioctl_submit_cmd(struct accel_dev *dev, unsigned long arg)
 
 		/* Copy data for write operations */
 		if (ucmd.submit.cmd.opcode == ACCEL_CMD_P2P_WRITE ||
-		    ucmd.submit.cmd.opcode == ACCEL_CMD_LOOPBACK) {
+		    ucmd.submit.cmd.opcode == ACCEL_CMD_LOOPBACK ||
+		    ucmd.submit.cmd.opcode == ACCEL_CMD_MEM_WRITE) {
 			u64 user_addr = le64_to_cpu(ucmd.submit.cmd.dbd.prpl.prp1);
 			if (copy_from_user(data_buf, (void __user *)user_addr,
 					   data_len)) {
@@ -496,7 +513,8 @@ static long accel_ioctl_submit_cmd(struct accel_dev *dev, unsigned long arg)
 
 	/* Copy back data for read operations */
 	if (data_buf && (ucmd.submit.cmd.opcode == ACCEL_CMD_P2P_READ ||
-			 ucmd.submit.cmd.opcode == ACCEL_CMD_LOOPBACK)) {
+			 ucmd.submit.cmd.opcode == ACCEL_CMD_LOOPBACK ||
+			 ucmd.submit.cmd.opcode == ACCEL_CMD_MEM_READ)) {
 		struct accel_uring_cmd orig;
 		void __user *uptr;
 
