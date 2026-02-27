@@ -340,6 +340,9 @@ endif
 if have_tools and have_vhost_user_blk_server
   qos_test_ss.add(files('vhost-user-blk-test.c'))
 endif
+if config_all_devices.has_key('CONFIG_PCIE_ACCEL')
+  qos_test_ss.add(files('pcie-accel-test.c'))
+endif
 
 tpmemu_files = ['tpm-emu.c', 'tpm-util.c', 'tpm-tests.c']
 
