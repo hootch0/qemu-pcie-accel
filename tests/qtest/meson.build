@@ -40,7 +40,8 @@ qtests_pci = \
   (config_all_devices.has_key('CONFIG_IVSHMEM_DEVICE') ? ['ivshmem-test'] : [])
 
 qtests_cxl = \
-  (config_all_devices.has_key('CONFIG_CXL') ? ['cxl-test'] : [])
+  (config_all_devices.has_key('CONFIG_CXL') ? ['cxl-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_CXL') and config_all_devices.has_key('CONFIG_PCIE_ACCEL') ? ['pcie-accel-cxl-test'] : [])
 
 # FIXME: Get rid of get_option('default_devices') here and check
 #        for the availability of the default NICs in the tests

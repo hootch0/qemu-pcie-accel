@@ -71,6 +71,12 @@ struct accel_uring_cmd {
             uint8_t  peer_slot;
             uint64_t peer_bar0;
         } setup_p2p;
+
+        /* ACCEL_URING_CMD_CXL_CTRL */
+        struct {
+            uint8_t sub_op;     /* ACCEL_CXL_CTRL_* */
+            uint8_t rsvd[63];
+        } cxl_ctrl;
     };
 } __attribute__((packed));
 
@@ -949,6 +955,40 @@ int accel_teardown_p2p_peer(struct accel_device *dev, uint16_t peer_bdf,
     cmd.p2p_teardown.slot = slot;
 
     return accel_submit_cmd(dev, 0, &cmd, &cqe, 5000);
+}
+
+/*
+ * ===== CXL.cache Control =====
+ */
+
+/**
+ * accel_cxl_status - Query CXL.cache queue mode status via io_uring
+ */
+int accel_cxl_status(struct accel_device *dev, uint32_t *cxlqcfg)
+{
+    struct accel_uring_cmd ucmd = {0};
+    struct io_uring_sqe *sqe;
+    int ret;
+
+    if (!dev || !cxlqcfg)
+        return ACCEL_ERR_INVAL;
+
+    ucmd.op = ACCEL_URING_CMD_CXL_CTRL;
+    ucmd.cxl_ctrl.sub_op = ACCEL_CXL_CTRL_STATUS;
+
+    sqe = prepare_uring_cmd(dev, &ucmd, 0);
+    if (!sqe)
+        return ACCEL_ERR_BUSY;
+
+    dev->total_submitted++;
+    ret = submit_and_wait_sync(dev);
+    if (ret == ACCEL_ERR_IO)
+        return ACCEL_ERR_NODEV;    /* -ENODEV from kernel = not a CXL device */
+    if (ret < 0)
+        return ret;
+
+    *cxlqcfg = (uint32_t)ret;
+    return ACCEL_SUCCESS;
 }
 
 /*

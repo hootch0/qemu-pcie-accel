@@ -49,6 +49,7 @@
 #define ACCEL_REG_INTCOAL	0x002C
 #define ACCEL_REG_DEVSTAT	0x0030
 #define ACCEL_REG_P2RCFG	0x0034
+#define ACCEL_REG_CXLQCFG	0x0038
 #define ACCEL_REG_DOORBELL	0x1000
 #define ACCEL_P2R_DB_BASE	0x4000
 #define ACCEL_P2R_DB_STRIDE	8
@@ -108,6 +109,20 @@ struct accel_ring_msg {
 	__le32	length;		/* Total including header, 8-byte aligned */
 } __packed;
 
+/* CAP register bits */
+#define ACCEL_CAP_CXL_CACHE_SHIFT	28	/* CXL.cache protocol supported */
+
+/* CXLQCFG register bits (CXL Queue Configuration - offset 0x0038) */
+#define ACCEL_CXLQCFG_EN_SHIFT		0	/* CXL.cache queue enable */
+#define ACCEL_CXLQCFG_EN_MASK		0x1
+#define ACCEL_CXLQCFG_FLUSH_SHIFT	1	/* Cache flush (write-only) */
+#define ACCEL_CXLQCFG_FLUSH_MASK	0x1
+#define ACCEL_CXLQCFG_ACTIVE_SHIFT	8	/* CXL.cache active (RO) */
+#define ACCEL_CXLQCFG_MISS_SHIFT	9	/* Last access was miss (RO) */
+#define ACCEL_CXLQCFG_ERR_SHIFT	10	/* Protocol error (RO) */
+#define ACCEL_CXLQCFG_LINES_SHIFT	16	/* Cache line count (RO) */
+#define ACCEL_CXLQCFG_LINES_MASK	0xFFFF
+
 /* Status codes */
 #define ACCEL_SC_SUCCESS		0x00
 #define ACCEL_SC_INVALID_OPCODE		0x01
@@ -122,7 +137,14 @@ enum accel_uring_cmd_op {
 	ACCEL_URING_CMD_SETUP_P2P,	/* Setup P2P peer */
 	ACCEL_URING_CMD_GET_STATS,	/* Get statistics */
 	ACCEL_URING_CMD_ADMIN,		/* Admin command */
+	ACCEL_URING_CMD_CXL_CTRL,	/* CXL.cache queue mode control */
 };
+
+/* ACCEL_URING_CMD_CXL_CTRL sub-operations */
+#define ACCEL_CXL_CTRL_STATUS	0	/* Read CXLQCFG register (returns value) */
+#define ACCEL_CXL_CTRL_ENABLE	1	/* Enable CXL.cache for SQ and CQ */
+#define ACCEL_CXL_CTRL_DISABLE	2	/* Disable CXL.cache, revert to PCIe DMA */
+#define ACCEL_CXL_CTRL_FLUSH	3	/* Flush all CXL.cache lines */
 
 /* Forward declarations */
 struct accel_dev;
@@ -334,6 +356,12 @@ struct accel_uring_cmd {
 			__u8	peer_slot;
 			__u64	peer_bar0;
 		} setup_p2p;
+
+		/* For ACCEL_URING_CMD_CXL_CTRL */
+		struct {
+			__u8	sub_op;		/* ACCEL_CXL_CTRL_* */
+			__u8	rsvd[63];
+		} cxl_ctrl;
 	};
 } __packed;
 
@@ -488,7 +516,8 @@ struct accel_p2p_ring_setup {
 
 struct accel_dev {
 	struct pci_dev *pdev;
-	void __iomem *bar0;			/* BAR0: MMIO registers */
+	void __iomem *bar0;			/* MMIO registers base */
+	int mmio_bar;				/* BAR index for MMIO (0=base, 2=CXL) */
 
 	struct cdev cdev;
 	dev_t devt;
@@ -506,6 +535,10 @@ struct accel_dev {
 	struct iommu_domain *domain;
 	bool pasid_enabled;
 	u32 pasid;
+
+	/* CXL Type 1 support */
+	bool is_cxl;				/* True for CXL Type 1 variant */
+	bool cxl_cache_enabled;			/* CXL.cache queue mode active */
 
 	/* io_uring support */
 	struct kmem_cache *req_cache;		/* Request slab cache */
@@ -526,6 +559,7 @@ struct accel_dev {
 #define ACCEL_IOC_SETUP_P2P	_IOW(ACCEL_IOC_MAGIC, 4, struct accel_uring_cmd)
 #define ACCEL_IOC_GET_STATS	_IOR(ACCEL_IOC_MAGIC, 5, struct accel_uring_result)
 #define ACCEL_IOC_P2P_RING_SETUP _IOW(ACCEL_IOC_MAGIC, 6, struct accel_p2p_ring_setup)  /* deprecated */
+#define ACCEL_IOC_CXL_CTRL	_IOWR(ACCEL_IOC_MAGIC, 7, __u32)  /* CXL.cache control: arg=sub_op, returns CXLQCFG */
 
 /* Helper functions */
 static inline u32 accel_reg_read32(struct accel_dev *dev, u32 offset)
@@ -605,5 +639,10 @@ void accel_p2p_dma_unmap(struct accel_dev *dev, dma_addr_t dma_addr, size_t len)
 /* Request management */
 struct accel_request *accel_alloc_request(struct accel_queue *queue);
 void accel_free_request(struct accel_request *req);
+
+/* CXL.cache queue mode control */
+int accel_cxl_cache_enable(struct accel_dev *dev);
+void accel_cxl_cache_disable(struct accel_dev *dev);
+void accel_cxl_cache_flush(struct accel_dev *dev);
 
 #endif /* _PCIE_ACCEL_H */

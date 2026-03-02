@@ -23,6 +23,7 @@
 enum reg_type {
     CXL2_DEVICE,
     CXL2_TYPE3_DEVICE,
+    CXL2_TYPE1_DEVICE,
     CXL2_LOGICAL_DEVICE,
     CXL2_ROOT_PORT,
     CXL2_RC,

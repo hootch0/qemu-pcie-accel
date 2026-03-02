@@ -110,6 +110,21 @@ extern "C" {
 #define ACCEL_SC_P2P_PEER_NOT_FOUND 0x21
 
 /*
+ * ===== CXL.cache Register Definitions =====
+ */
+#define ACCEL_CAP_CXL_CACHE_SHIFT       28  /* CAP bit: CXL.cache supported */
+
+/* CXLQCFG register (offset 0x0038) - CXL Queue Configuration */
+#define ACCEL_REG_CXLQCFG               0x0038
+#define ACCEL_CXLQCFG_EN_SHIFT          0   /* CXL.cache enable (SQ + CQ) */
+#define ACCEL_CXLQCFG_FLUSH_SHIFT       1   /* Cache flush (write-only) */
+#define ACCEL_CXLQCFG_ACTIVE_SHIFT      8   /* CXL.cache active (RO) */
+#define ACCEL_CXLQCFG_MISS_SHIFT        9   /* Last access miss (RO) */
+#define ACCEL_CXLQCFG_ERR_SHIFT         10  /* Protocol error (RO) */
+#define ACCEL_CXLQCFG_LINES_SHIFT       16  /* Cache line count (RO) */
+#define ACCEL_CXLQCFG_LINES_MASK        0xFFFF
+
+/*
  * ===== io_uring Command Operations =====
  */
 #define ACCEL_URING_CMD_SUBMIT        0
@@ -118,6 +133,13 @@ extern "C" {
 #define ACCEL_URING_CMD_SETUP_P2P     3
 #define ACCEL_URING_CMD_GET_STATS     4
 #define ACCEL_URING_CMD_ADMIN         5
+#define ACCEL_URING_CMD_CXL_CTRL      6   /* CXL.cache queue mode control */
+
+/* ACCEL_URING_CMD_CXL_CTRL sub-operations */
+#define ACCEL_CXL_CTRL_STATUS         0   /* Read CXLQCFG register (returns value) */
+#define ACCEL_CXL_CTRL_ENABLE         1   /* Enable CXL.cache for SQ and CQ */
+#define ACCEL_CXL_CTRL_DISABLE        2   /* Disable CXL.cache, revert to PCIe DMA */
+#define ACCEL_CXL_CTRL_FLUSH          3   /* Flush all CXL.cache lines */
 
 /*
  * ===== Data Structures =====
@@ -787,6 +809,24 @@ void *accel_mmap_doorbells(struct accel_device *dev, size_t *size);
  * @size: Size returned by accel_mmap_doorbells
  */
 void accel_munmap_doorbells(struct accel_device *dev, void *addr, size_t size);
+
+/*
+ * ----- CXL.cache Control -----
+ * Requires a CXL Type 1 variant of the accelerator device.
+ */
+
+/**
+ * accel_cxl_status - Query CXL.cache queue mode status via io_uring
+ * @dev: Device handle
+ * @cxlqcfg: Output: raw CXLQCFG register value
+ *
+ * Reads the CXLQCFG register via io_uring ACCEL_URING_CMD_CXL_CTRL.
+ * The returned value contains EN, ACTIVE, MISS, ERR, and LINES fields.
+ *
+ * Returns: ACCEL_SUCCESS on success, ACCEL_ERR_NODEV if not a CXL device,
+ *          or other error code
+ */
+int accel_cxl_status(struct accel_device *dev, uint32_t *cxlqcfg);
 
 /*
  * ----- io_uring Direct Access -----

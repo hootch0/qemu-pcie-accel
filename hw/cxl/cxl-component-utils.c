@@ -292,6 +292,7 @@ void cxl_component_register_init_common(uint32_t *reg_state,
     switch (type) {
     case CXL2_DOWNSTREAM_PORT:
     case CXL2_DEVICE:
+    case CXL2_TYPE1_DEVICE:
         /* RAS, Link */
         caps = 2;
         break;
@@ -334,6 +335,7 @@ void cxl_component_register_init_common(uint32_t *reg_state,
 
     switch (type) {
     case CXL2_DEVICE:
+    case CXL2_TYPE1_DEVICE:
     case CXL2_TYPE3_DEVICE:
     case CXL2_LOGICAL_DEVICE:
     case CXL2_ROOT_PORT:

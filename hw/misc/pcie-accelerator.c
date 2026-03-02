@@ -293,9 +293,9 @@ void accel_post_cqes(void *opaque)
         req->cqe.status = cpu_to_le32(ACCEL_CQE_BUILD_STATUS(req->status,
                                                                0, cq->phase));
 
-        /* Write CQE to host memory */
+        /* Write CQE to host memory (via CXL.cache D2H Write or PCIe DMA) */
         addr = cq->dma_addr + (cq->tail << ACCEL_CQES);
-        status = accel_dma_write_safe(n, addr, &req->cqe, sizeof(req->cqe));
+        status = n->dma_ops.write(n, addr, &req->cqe, sizeof(req->cqe));
 
         if (status != ACCEL_SC_SUCCESS) {
             qemu_log_mask(LOG_GUEST_ERROR,
@@ -1326,9 +1326,9 @@ void accel_process_sq(void *opaque)
 
     /* Process commands until queue is empty or no requests available */
     while (!accel_sq_empty(sq) && !QTAILQ_EMPTY(&sq->req_list)) {
-        /* Fetch command from host memory */
+        /* Fetch command from host memory (via CXL.cache D2H Read or PCIe DMA) */
         addr = sq->dma_addr + (sq->head << ACCEL_SQES);
-        status = accel_dma_read_safe(n, addr, &cmd, sizeof(cmd));
+        status = n->dma_ops.read(n, addr, &cmd, sizeof(cmd));
 
         if (status != ACCEL_SC_SUCCESS) {
             qemu_log_mask(LOG_GUEST_ERROR,
@@ -2024,6 +2024,10 @@ void pcie_accel_realize(PCIDevice *pci_dev, Error **errp)
         int max_pasid = 1 << n->sva.pasid_width;
         n->sva.pasid_as = g_new0(AddressSpace *, max_pasid);
     }
+
+    /* Initialize DMA ops (may be overridden by CXL variant) */
+    n->dma_ops.read = accel_dma_read_safe;
+    n->dma_ops.write = accel_dma_write_safe;
 
     /* Reset to initialize registers */
     pcie_accel_reset(DEVICE(n));

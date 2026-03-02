@@ -510,6 +510,45 @@ static int accel_uring_cmd_get_stats(struct io_uring_cmd *ioucmd,
 }
 
 /**
+ * accel_uring_cmd_cxl_ctrl - Handle ACCEL_URING_CMD_CXL_CTRL
+ * @ioucmd: io_uring command context
+ * @dev: Device structure
+ * @ucmd: User command structure
+ *
+ * Controls CXL.cache queue mode via io_uring. Supports status query,
+ * enable, disable, and cache flush sub-operations.
+ *
+ * Returns: CXLQCFG register value for STATUS, 0 for others, or negative error
+ */
+static int accel_uring_cmd_cxl_ctrl(struct io_uring_cmd *ioucmd,
+				     struct accel_dev *dev,
+				     const struct accel_uring_cmd *ucmd)
+{
+	if (!dev->is_cxl)
+		return -ENODEV;
+
+	switch (ucmd->cxl_ctrl.sub_op) {
+	case ACCEL_CXL_CTRL_STATUS:
+		/* Return raw CXLQCFG register in CQE result */
+		return (int)accel_reg_read32(dev, ACCEL_REG_CXLQCFG);
+
+	case ACCEL_CXL_CTRL_ENABLE:
+		return accel_cxl_cache_enable(dev);
+
+	case ACCEL_CXL_CTRL_DISABLE:
+		accel_cxl_cache_disable(dev);
+		return 0;
+
+	case ACCEL_CXL_CTRL_FLUSH:
+		accel_cxl_cache_flush(dev);
+		return 0;
+
+	default:
+		return -EINVAL;
+	}
+}
+
+/**
  * accel_uring_cmd - Main io_uring command handler
  * @ioucmd: io_uring command context
  * @issue_flags: Flags from io_uring (e.g., IO_URING_F_NONBLOCK)
@@ -566,6 +605,9 @@ int accel_uring_cmd(struct io_uring_cmd *ioucmd, unsigned int issue_flags)
 			return accel_uring_cmd_submit(ioucmd, dev, &admin_ucmd,
 						      issue_flags);
 		}
+
+	case ACCEL_URING_CMD_CXL_CTRL:
+		return accel_uring_cmd_cxl_ctrl(ioucmd, dev, ucmd);
 
 	default:
 		return -EINVAL;
@@ -779,6 +821,14 @@ static long accel_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		if (copy_from_user(&params, (void __user *)arg, sizeof(params)))
 			return -EFAULT;
 		return accel_setup_p2p_peer(dev, &params);
+	}
+
+	case ACCEL_IOC_CXL_CTRL: {
+		/* arg is sub_op; returns CXLQCFG value for STATUS, 0 otherwise */
+		struct accel_uring_cmd ucmd = {0};
+
+		ucmd.cxl_ctrl.sub_op = (__u8)(arg & 0xFF);
+		return accel_uring_cmd_cxl_ctrl(NULL, dev, &ucmd);
 	}
 
 	default:

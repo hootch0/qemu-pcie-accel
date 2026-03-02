@@ -33,7 +33,7 @@ BINDIR := $(PREFIX)/bin
 LIBDIR := $(realpath ../libaccel)
 
 # Source files
-EXAMPLES := test_loopback test_p2p test_mem
+EXAMPLES := test_loopback test_p2p test_mem test_cxl
 
 # Default target
 all: $(EXAMPLES)
@@ -47,6 +47,10 @@ test_p2p: test_p2p.c ../libaccel/libaccel.a
 
 test_mem: test_mem.c ../libaccel/libaccel.a
 	$(CC) $(CFLAGS) -I../libaccel -o $@ $< ../libaccel/libaccel.a $(LIBS)
+
+# CXL test does not use io_uring, only needs libaccel
+test_cxl: test_cxl.c ../libaccel/libaccel.a
+	$(CC) $(CFLAGS) -I../libaccel -o $@ $< ../libaccel/libaccel.a
 
 # Ensure library is built
 ../libaccel/libaccel.a:
@@ -108,6 +112,11 @@ run-mem: test_mem
 	@echo "Note: Requires /dev/accel0 and root privileges"
 	sudo LD_LIBRARY_PATH=$(LIBDIR) ./test_mem
 
+run-cxl: test_cxl
+	@echo "Running CXL.cache queue mode test..."
+	@echo "Note: Requires CXL accelerator device and root privileges"
+	sudo LD_LIBRARY_PATH=$(LIBDIR) ./test_cxl
+
 # Help
 help:
 	@echo "PCIe Accelerator Examples (io_uring)"
@@ -129,10 +138,14 @@ help:
 	@echo "  run-p2p-bidir        - Run P2P test (bidirectional)"
 	@echo "  run-p2p-queue        - Run P2P MMIO queue setup test"
 	@echo ""
+	@echo "CXL Tests:"
+	@echo "  run-cxl              - Run CXL.cache queue mode test"
+	@echo ""
 	@echo "Examples:"
 	@echo "  test_loopback - Basic loopback DMA test with io_uring"
 	@echo "  test_p2p      - Peer-to-peer DMA test with io_uring"
 	@echo "  test_mem      - Device memory read/write test"
+	@echo "  test_cxl      - CXL.cache queue mode test (SQ + CQ)"
 	@echo ""
 	@echo "Usage:"
 	@echo "  ./test_loopback -h       # Show help"
@@ -149,4 +162,4 @@ help:
 .PHONY: all clean install uninstall help
 .PHONY: run-loopback run-loopback-async run-loopback-concurrent
 .PHONY: run-p2p run-p2p-async run-p2p-bidir run-p2p-queue
-.PHONY: run-mem
+.PHONY: run-mem run-cxl

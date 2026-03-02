@@ -44,8 +44,13 @@ module_param(req_pool_size, uint, 0444);
 MODULE_PARM_DESC(req_pool_size, "Request pool size per queue (default: 256)");
 
 /* PCI device IDs */
+#define ACCEL_PCI_VENDOR_ID	0x1234
+#define ACCEL_PCI_DEVICE_ID	0x5678	/* Base PCIe Accelerator */
+#define ACCEL_PCI_CXL_ID	0x5679	/* CXL Type 1 Accelerator */
+
 static const struct pci_device_id accel_pci_tbl[] = {
-	{ PCI_DEVICE(0x1234, 0x5678) },  /* QEMU PCIe Accelerator */
+	{ PCI_DEVICE(ACCEL_PCI_VENDOR_ID, ACCEL_PCI_DEVICE_ID) },
+	{ PCI_DEVICE(ACCEL_PCI_VENDOR_ID, ACCEL_PCI_CXL_ID) },
 	{ 0, }
 };
 MODULE_DEVICE_TABLE(pci, accel_pci_tbl);
@@ -564,10 +569,19 @@ static int accel_pci_probe(struct pci_dev *pdev,
 		dev_warn(&pdev->dev, "Using 32-bit DMA addressing\n");
 	}
 
-	/* Map BAR0 (controller registers) */
-	dev->bar0 = pci_iomap(pdev, 0, 0);
+	/*
+	 * Detect CXL Type 1 variant.
+	 * Base device: MMIO registers in BAR0
+	 * CXL device:  BAR0 = CXL component regs, MMIO registers in BAR2
+	 */
+	dev->is_cxl = (pdev->device == ACCEL_PCI_CXL_ID);
+	dev->mmio_bar = dev->is_cxl ? 2 : 0;
+
+	/* Map MMIO registers BAR */
+	dev->bar0 = pci_iomap(pdev, dev->mmio_bar, 0);
 	if (!dev->bar0) {
-		dev_err(&pdev->dev, "Failed to map BAR0\n");
+		dev_err(&pdev->dev, "Failed to map BAR%d (MMIO)\n",
+			dev->mmio_bar);
 		ret = -ENOMEM;
 		goto err_release_regions;
 	}
@@ -575,7 +589,8 @@ static int accel_pci_probe(struct pci_dev *pdev,
 	/* Log device capabilities */
 	{
 		u64 cap = accel_reg_read64(dev, ACCEL_REG_CAP);
-		dev_info(&pdev->dev, "CAP=0x%016llx\n", cap);
+		dev_info(&pdev->dev, "%s device CAP=0x%016llx\n",
+			 dev->is_cxl ? "CXL Type 1" : "PCIe", cap);
 	}
 
 	/* Set up MSI-X interrupts for per-queue completion notification */
@@ -613,6 +628,21 @@ static int accel_pci_probe(struct pci_dev *pdev,
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to enable controller: %d\n", ret);
 		goto err_free_admin;
+	}
+
+	/*
+	 * Enable CXL.cache for SQ/CQ if this is a CXL Type 1 device.
+	 * Writes CXLQCFG.EN=1 to switch queue fetching from PCIe DMA
+	 * to CXL.cache D2H protocol for both SQ reads and CQ writes.
+	 */
+	if (dev->is_cxl) {
+		ret = accel_cxl_cache_enable(dev);
+		if (ret) {
+			dev_warn(&pdev->dev,
+				 "CXL.cache enable failed (%d), using PCIe DMA\n",
+				 ret);
+			/* Non-fatal: device works with PCIe DMA fallback */
+		}
 	}
 
 	/* Set up character device with io_uring support */
@@ -668,6 +698,12 @@ static void accel_pci_remove(struct pci_dev *pdev)
 
 	/* Clean up P2P peers while controller is still enabled */
 	accel_cleanup_p2p_peers(dev);
+
+	/* Disable CXL.cache before controller disable */
+	if (dev->is_cxl && dev->cxl_cache_enabled) {
+		accel_cxl_cache_disable(dev);
+		accel_cxl_cache_flush(dev);
+	}
 
 	/* Disable controller - stops all command processing */
 	accel_disable_ctrl(dev);
@@ -816,3 +852,87 @@ unsigned int accel_get_req_pool_size(void)
 	return req_pool_size;
 }
 EXPORT_SYMBOL_GPL(accel_get_req_pool_size);
+
+/*
+ * ===== CXL.cache Queue Mode Control =====
+ *
+ * These functions manage the CXLQCFG register to enable/disable
+ * CXL.cache D2H protocol for both SQ reads and CQ writes.
+ */
+
+/**
+ * accel_cxl_cache_enable - Enable CXL.cache for SQ and CQ operations
+ * @dev: Device structure
+ *
+ * Writes CXLQCFG.EN=1 to activate CXL.cache D2H protocol:
+ * - SQ: SQE fetches use D2H RdOwn at 64-byte cache-line granularity
+ * - CQ: CQE posts use D2H WrCurr (read-modify-write for 16B CQEs)
+ *
+ * Returns: 0 on success, -EIO if enable failed
+ */
+int accel_cxl_cache_enable(struct accel_dev *dev)
+{
+	u32 val;
+
+	if (!dev->is_cxl) {
+		dev_err(&dev->pdev->dev,
+			"CXL.cache not supported on base PCIe device\n");
+		return -ENODEV;
+	}
+
+	/* Write EN=1 to CXLQCFG */
+	accel_reg_write32(dev, ACCEL_REG_CXLQCFG,
+			  1 << ACCEL_CXLQCFG_EN_SHIFT);
+
+	/* Verify active */
+	val = accel_reg_read32(dev, ACCEL_REG_CXLQCFG);
+	if (!(val & (1 << ACCEL_CXLQCFG_ACTIVE_SHIFT))) {
+		dev_err(&dev->pdev->dev,
+			"CXL.cache failed to activate (CXLQCFG=0x%08x)\n",
+			val);
+		return -EIO;
+	}
+
+	dev->cxl_cache_enabled = true;
+
+	dev_info(&dev->pdev->dev,
+		 "CXL.cache enabled for SQ/CQ (lines=%u)\n",
+		 (val >> ACCEL_CXLQCFG_LINES_SHIFT) & ACCEL_CXLQCFG_LINES_MASK);
+
+	return 0;
+}
+
+/**
+ * accel_cxl_cache_disable - Disable CXL.cache, revert to PCIe DMA
+ * @dev: Device structure
+ *
+ * Writes CXLQCFG.EN=0 to switch both SQ and CQ back to PCIe DMA.
+ */
+void accel_cxl_cache_disable(struct accel_dev *dev)
+{
+	if (!dev->is_cxl || !dev->cxl_cache_enabled)
+		return;
+
+	accel_reg_write32(dev, ACCEL_REG_CXLQCFG, 0);
+	dev->cxl_cache_enabled = false;
+
+	dev_info(&dev->pdev->dev, "CXL.cache disabled (PCIe DMA for SQ/CQ)\n");
+}
+
+/**
+ * accel_cxl_cache_flush - Flush and invalidate all CXL.cache lines
+ * @dev: Device structure
+ *
+ * Writes CXLQCFG.FLUSH=1 to invalidate all cached lines.
+ * Only valid when CXL.cache is disabled (EN=0).
+ */
+void accel_cxl_cache_flush(struct accel_dev *dev)
+{
+	if (!dev->is_cxl)
+		return;
+
+	accel_reg_write32(dev, ACCEL_REG_CXLQCFG,
+			  1 << ACCEL_CXLQCFG_FLUSH_SHIFT);
+
+	dev_dbg(&dev->pdev->dev, "CXL.cache flushed\n");
+}

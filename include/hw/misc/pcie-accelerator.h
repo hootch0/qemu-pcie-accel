@@ -285,6 +285,13 @@ struct PCIeAccel {
         uint64_t cmd_errors;            /* Total command errors */
     } stats;
 
+    /* DMA operation vtable (overridden by CXL variant for CXL.cache) */
+    struct {
+        uint16_t (*read)(PCIeAccel *n, uint64_t addr, void *buf, size_t len);
+        uint16_t (*write)(PCIeAccel *n, uint64_t addr,
+                          const void *buf, size_t len);
+    } dma_ops;
+
     /* Device Instance */
     uint16_t dev_id;                    /* Sequential device ID (assigned at realize) */
 

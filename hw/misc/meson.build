@@ -164,3 +164,4 @@ system_ss.add(when: 'CONFIG_LASI', if_true: files('lasi.c'))
 
 # PCIe Accelerator
 system_ss.add(when: 'CONFIG_PCIE_ACCEL', if_true: files('pcie-accelerator.c', 'pcie-accelerator-p2p.c'))
+system_ss.add(when: ['CONFIG_PCIE_ACCEL', 'CONFIG_CXL'], if_true: files('pcie-accelerator-cxl.c'))

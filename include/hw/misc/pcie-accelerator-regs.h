@@ -426,6 +426,67 @@
      (((uint64_t)(pid)  & ACCEL_MR_PID_MASK)   << ACCEL_MR_PID_SHIFT) | \
      (((uint64_t)(size) & ACCEL_MR_SIZE_MASK)   << ACCEL_MR_SIZE_SHIFT))
 
+/* ===== CXL.cache Capability and Status ===== */
+/*
+ * CAP register bit 28: CXL.cache protocol supported.
+ * Set by the CXL Type 1 variant to advertise CXL.cache host queue fetching.
+ */
+#define ACCEL_CAP_CXL_CACHE_SHIFT   28
+
+/* ===== CXL Queue Configuration Register (CXLQCFG) - Offset 0x0038 ===== */
+/*
+ * 32-bit read/write register for CXL.cache queue mode configuration.
+ * Only present on CXL Type 1 variant (pcie-accelerator-cxl).
+ * Controls whether host queue operations (SQ reads and CQ writes) use
+ * CXL.cache D2H protocol or standard PCIe DMA.
+ *
+ * Bit [0]      - EN: CXL.cache Queue Enable
+ *                0 = Use standard PCIe DMA for SQ/CQ access (default)
+ *                1 = Use CXL.cache D2H protocol for SQ/CQ access
+ *                When set:
+ *                  SQ: SQE fetches use CXL.cache D2H RdOwn
+ *                  CQ: CQE posts use CXL.cache D2H WrCurr
+ *                Both operate at 64-byte cache-line granularity.
+ *                Reset: 0 (disabled)
+ *
+ * Bit [1]      - FLUSH: Cache Flush
+ *                Write 1 to invalidate all CXL.cache lines.
+ *                Always reads back as 0. Only valid when EN=0.
+ *                Reset: 0
+ *
+ * Bits [7:2]   - Reserved (must be 0)
+ *
+ * Bits [15:8]  - STS: CXL.cache Status (read-only)
+ *                Bit 8  (ACTIVE): CXL.cache is actively caching
+ *                Bit 9  (MISS):   Last access was a cache miss
+ *                Bit 10 (ERR):    CXL.cache protocol error occurred
+ *                Bits 11-15: Reserved
+ *
+ * Bits [31:16] - LINES: Number of cache lines (read-only)
+ *                Reports the device's configured cache line count.
+ *                Reset: Value of cache_lines property (default 256)
+ */
+#define ACCEL_REG_CXLQCFG   0x0038
+
+#define ACCEL_CXLQCFG_EN_SHIFT       0
+#define ACCEL_CXLQCFG_EN_MASK        0x1
+#define ACCEL_CXLQCFG_FLUSH_SHIFT    1
+#define ACCEL_CXLQCFG_FLUSH_MASK     0x1
+#define ACCEL_CXLQCFG_ACTIVE_SHIFT   8
+#define ACCEL_CXLQCFG_MISS_SHIFT     9
+#define ACCEL_CXLQCFG_ERR_SHIFT      10
+#define ACCEL_CXLQCFG_LINES_SHIFT    16
+#define ACCEL_CXLQCFG_LINES_MASK     0xFFFF
+
+/*
+ * CXL.cache-specific status codes (0x60-0x6F).
+ * Returned by CXL.cache D2H operations on protocol-level failures.
+ */
+#define ACCEL_CXL_SC_CACHE_READ_ERR   0x60  /* D2H Read failed */
+#define ACCEL_CXL_SC_CACHE_WRITE_ERR  0x61  /* D2H Write failed */
+#define ACCEL_CXL_SC_CACHE_RMW_ERR    0x62  /* Read-modify-write failed */
+#define ACCEL_CXL_SC_CACHE_EVICT_ERR  0x63  /* Cache eviction failed */
+
 /* ===== BAR Sizes ===== */
 #define ACCEL_BAR0_SIZE         (8 * 1024)         /* 8KB - MMIO registers + doorbells */
 #define ACCEL_CMB_SIZE          (32 * 1024 * 1024)   /* 16MB - Controller Memory Buffer (BAR2) */
